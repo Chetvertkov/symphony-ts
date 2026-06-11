@@ -1,9 +1,10 @@
 ---
 # ============================================================
-# tracker — Issue tracker connection ("linear" or "notion")
+# tracker — Issue tracker adapter connection
 # ============================================================
 tracker:
-  # Tracker backend. Supported values: "linear" and "notion".
+  # Tracker adapter selected by this repository.
+  # Currently bundled: "linear" and "notion".
   kind: linear
 
   # GraphQL endpoint for the Linear API.

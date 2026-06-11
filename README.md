@@ -14,6 +14,17 @@ orchestrator flow.
 
 ![Symphony demo showing Linear issue tracking alongside the Symphony observability dashboard](.github/media/demo.png)
 
+## Tracker Adapters
+
+Symphony uses tracker adapters. Each target repository chooses its project management platform in
+`WORKFLOW.md` through `tracker.kind`; the runtime then loads the matching adapter and normalizes
+tickets into Symphony's shared issue model. Linear remains the default adapter, Notion is bundled
+as the first non-Linear option, and the adapter layer is designed so additional platforms can be
+added without changing orchestration, workspace, dashboard, or prompt behavior.
+
+See [docs/TRACKER_ADAPTERS.md](docs/TRACKER_ADAPTERS.md) for the adapter contract, recommended
+ticket fields, and status lifecycle.
+
 ## Running Symphony Locally
 
 ### Requirements
@@ -21,7 +32,7 @@ orchestrator flow.
 - Node.js `>= 22`
 - pnpm `>= 10`
 - a target repository with a valid `WORKFLOW.md`
-- tracker credentials such as `LINEAR_API_KEY` or `NOTION_API_KEY`
+- tracker credentials for the selected adapter, such as `LINEAR_API_KEY` or `NOTION_API_KEY`
 - a coding agent runtime that supports app-server mode, such as `codex app-server`
 
 ### Build the local CLI
@@ -206,7 +217,9 @@ See [docs/DEV_GUIDE.md](docs/DEV_GUIDE.md) for a full walkthrough including Line
 
 | Item | Status |
 | --- | --- |
-| Implement Symphony tracker adapters (Linear, Notion) | ✅ Complete |
+| Implement Symphony and Linear integration | ✅ Complete |
+| Add pluggable tracker adapter layer | ✅ Complete |
+| Add bundled Notion tracker adapter | ✅ Complete |
 | Support more platforms such as GitHub Projects | 🟡 Planned |
 | Support a local board GUI | 🟡 Planned |
 | Support more coding agents such as Claude Code scheduling | 🟡 Planned |

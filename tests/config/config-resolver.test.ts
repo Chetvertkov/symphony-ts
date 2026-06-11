@@ -35,6 +35,7 @@ describe("config-resolver", () => {
 
     expect(resolved.tracker.kind).toBe("linear");
     expect(resolved.tracker.endpoint).toBe("https://api.linear.app/graphql");
+    expect(resolved.tracker.adapterOptions).toEqual({});
     expect(resolved.tracker.activeStates).toEqual(["Todo", "In Progress"]);
     expect(resolved.tracker.terminalStates).toEqual([
       "Closed",
@@ -43,16 +44,6 @@ describe("config-resolver", () => {
       "Duplicate",
       "Done",
     ]);
-    expect(resolved.tracker.adapterOptions).toEqual({
-      dataSourceId: null,
-      titleProperty: null,
-      statusProperty: null,
-      identifierProperty: null,
-      descriptionProperty: null,
-      priorityProperty: null,
-      labelsProperty: null,
-      blockedByProperty: null,
-    });
     expect(resolved.polling.intervalMs).toBe(DEFAULT_POLL_INTERVAL_MS);
     expect(resolved.workspace.root).toBe(DEFAULT_WORKSPACE_ROOT);
     expect(resolved.hooks.timeoutMs).toBe(DEFAULT_HOOK_TIMEOUT_MS);
@@ -85,6 +76,7 @@ describe("config-resolver", () => {
           tracker: {
             api_key: "$LINEAR_TOKEN",
             project_slug: "ENG",
+            board_id: "future-adapter-option",
             active_states: "Todo, In Progress, Ready for QA",
           },
           polling: {
@@ -129,6 +121,9 @@ describe("config-resolver", () => {
 
     expect(resolved.tracker.apiKey).toBe("secret-token");
     expect(resolved.tracker.projectSlug).toBe("ENG");
+    expect(resolved.tracker.adapterOptions).toEqual({
+      board_id: "future-adapter-option",
+    });
     expect(resolved.tracker.activeStates).toEqual([
       "Todo",
       "In Progress",
@@ -219,7 +214,7 @@ describe("config-resolver", () => {
         config: {
           tracker: {
             kind: "notion",
-            data_source_id: "data-source-1",
+            data_source_id: "$NOTION_DATA_SOURCE_ID",
             title_property: "Name",
             status_property: "Status",
             identifier_property: "Key",
@@ -232,20 +227,21 @@ describe("config-resolver", () => {
       },
       {
         NOTION_API_KEY: "notion-secret",
+        NOTION_DATA_SOURCE_ID: "data-source-1",
       },
     );
 
     expect(resolved.tracker.endpoint).toBe(DEFAULT_NOTION_ENDPOINT);
     expect(resolved.tracker.apiKey).toBe("notion-secret");
     expect(resolved.tracker.adapterOptions).toEqual({
-      dataSourceId: "data-source-1",
-      titleProperty: "Name",
-      statusProperty: "Status",
-      identifierProperty: "Key",
-      descriptionProperty: "Description",
-      priorityProperty: "Priority",
-      labelsProperty: "Labels",
-      blockedByProperty: "Blocked by",
+      data_source_id: "data-source-1",
+      title_property: "Name",
+      status_property: "Status",
+      identifier_property: "Key",
+      description_property: "Description",
+      priority_property: "Priority",
+      labels_property: "Labels",
+      blocked_by_property: "Blocked by",
     });
   });
 
@@ -312,7 +308,8 @@ describe("config-resolver", () => {
       ok: false,
       error: {
         code: ERROR_CODES.unsupportedTrackerKind,
-        message: "tracker.kind 'jira' is not supported.",
+        message:
+          "tracker.kind 'jira' is not supported. Supported adapters: linear, notion.",
       },
     });
   });

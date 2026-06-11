@@ -5,6 +5,10 @@ import type { WorkflowDefinition } from "../domain/model.js";
 import { normalizeIssueState } from "../domain/model.js";
 import { ERROR_CODES } from "../errors/codes.js";
 import {
+  getTrackerAdapterApiKeyEnv,
+  validateTrackerAdapterConfig,
+} from "../tracker/adapters.js";
+import {
   DEFAULT_ACTIVE_STATES,
   DEFAULT_CODEX_COMMAND,
   DEFAULT_HOOK_TIMEOUT_MS,
@@ -32,8 +36,14 @@ import type {
   ResolvedWorkflowConfig,
 } from "./types.js";
 
-const LINEAR_CANONICAL_API_KEY_ENV = "LINEAR_API_KEY";
-const NOTION_CANONICAL_API_KEY_ENV = "NOTION_API_KEY";
+const TRACKER_COMMON_CONFIG_KEYS = new Set([
+  "kind",
+  "endpoint",
+  "api_key",
+  "project_slug",
+  "active_states",
+  "terminal_states",
+]);
 
 export function resolveWorkflowConfig(
   workflow: WorkflowDefinition & { workflowPath: string },
@@ -49,6 +59,7 @@ export function resolveWorkflowConfig(
   const server = asRecord(config.server);
   const observability = asRecord(config.observability);
   const trackerKind = readString(tracker.kind) ?? DEFAULT_TRACKER_KIND;
+  const trackerApiKeyEnv = getTrackerAdapterApiKeyEnv(trackerKind);
 
   return {
     workflowPath: workflow.workflowPath,
@@ -59,7 +70,7 @@ export function resolveWorkflowConfig(
         readString(tracker.endpoint) ?? defaultTrackerEndpoint(trackerKind),
       apiKey:
         resolveEnvReference(readString(tracker.api_key), environment) ??
-        defaultTrackerApiKey(trackerKind, environment) ??
+        (trackerApiKeyEnv === null ? null : environment[trackerApiKeyEnv]) ??
         null,
       projectSlug: readString(tracker.project_slug),
       activeStates: readStringList(
@@ -70,7 +81,7 @@ export function resolveWorkflowConfig(
         tracker.terminal_states,
         DEFAULT_TERMINAL_STATES,
       ),
-      adapterOptions: resolveTrackerAdapterOptions(tracker, environment),
+      adapterOptions: readAdapterOptions(tracker, environment),
     },
     polling: {
       intervalMs: readInteger(polling.interval_ms) ?? DEFAULT_POLL_INTERVAL_MS,
@@ -135,77 +146,9 @@ export function resolveWorkflowConfig(
 export function validateDispatchConfig(
   config: ResolvedWorkflowConfig,
 ): DispatchValidationResult {
-  const trackerKind = config.tracker.kind?.trim();
-  if (!trackerKind) {
-    return invalid(
-      ERROR_CODES.configInvalid,
-      "tracker.kind must be present before dispatch.",
-    );
-  }
-
-  const normalizedTrackerKind = normalizeIssueState(trackerKind);
-  if (
-    normalizedTrackerKind !== DEFAULT_TRACKER_KIND &&
-    normalizedTrackerKind !== "notion"
-  ) {
-    return invalid(
-      ERROR_CODES.unsupportedTrackerKind,
-      `tracker.kind '${trackerKind}' is not supported.`,
-    );
-  }
-
-  if (!config.tracker.apiKey || config.tracker.apiKey.trim() === "") {
-    return invalid(
-      ERROR_CODES.trackerCredentialsMissing,
-      "tracker.api_key must be configured before dispatch.",
-    );
-  }
-
-  if (normalizedTrackerKind === DEFAULT_TRACKER_KIND) {
-    if (
-      !config.tracker.projectSlug ||
-      config.tracker.projectSlug.trim() === ""
-    ) {
-      return invalid(
-        ERROR_CODES.configInvalid,
-        "tracker.project_slug must be configured before dispatch.",
-      );
-    }
-  }
-
-  if (normalizedTrackerKind === "notion") {
-    const dataSourceId = readAdapterOption(
-      config.tracker.adapterOptions,
-      "dataSourceId",
-    );
-    if (!dataSourceId) {
-      return invalid(
-        ERROR_CODES.configInvalid,
-        "tracker.data_source_id must be configured before dispatch.",
-      );
-    }
-
-    const titleProperty = readAdapterOption(
-      config.tracker.adapterOptions,
-      "titleProperty",
-    );
-    if (!titleProperty) {
-      return invalid(
-        ERROR_CODES.configInvalid,
-        "tracker.title_property must be configured before dispatch.",
-      );
-    }
-
-    const statusProperty = readAdapterOption(
-      config.tracker.adapterOptions,
-      "statusProperty",
-    );
-    if (!statusProperty) {
-      return invalid(
-        ERROR_CODES.configInvalid,
-        "tracker.status_property must be configured before dispatch.",
-      );
-    }
+  const trackerValidation = validateTrackerAdapterConfig(config);
+  if (trackerValidation !== null) {
+    return invalid(trackerValidation.code, trackerValidation.message);
   }
 
   if (config.codex.command.trim() === "") {
@@ -253,40 +196,19 @@ function readScript(value: unknown): string | null {
   return script === "" ? null : script;
 }
 
-function resolveTrackerAdapterOptions(
+function readAdapterOptions(
   tracker: Record<string, unknown>,
   environment: NodeJS.ProcessEnv,
 ): Readonly<Record<string, unknown>> {
-  return Object.freeze({
-    dataSourceId: readEnvBackedString(tracker.data_source_id, environment),
-    titleProperty: readEnvBackedString(tracker.title_property, environment),
-    statusProperty: readEnvBackedString(tracker.status_property, environment),
-    identifierProperty: readEnvBackedString(
-      tracker.identifier_property,
-      environment,
+  return Object.freeze(
+    Object.fromEntries(
+      Object.entries(tracker)
+        .filter(([key]) => !TRACKER_COMMON_CONFIG_KEYS.has(key))
+        .map(([key, value]) => [
+          key,
+          resolveTrackerAdapterOptionValue(value, environment),
+        ]),
     ),
-    descriptionProperty: readEnvBackedString(
-      tracker.description_property,
-      environment,
-    ),
-    priorityProperty: readEnvBackedString(
-      tracker.priority_property,
-      environment,
-    ),
-    labelsProperty: readEnvBackedString(tracker.labels_property, environment),
-    blockedByProperty: readEnvBackedString(
-      tracker.blocked_by_property,
-      environment,
-    ),
-  });
-}
-
-function readEnvBackedString(
-  value: unknown,
-  environment: NodeJS.ProcessEnv,
-): string | null {
-  return (
-    resolveEnvReference(readString(value), environment) ?? readString(value)
   );
 }
 
@@ -367,21 +289,20 @@ function defaultTrackerEndpoint(trackerKind: string): string {
     : DEFAULT_LINEAR_ENDPOINT;
 }
 
-function defaultTrackerApiKey(
-  trackerKind: string,
+function resolveTrackerAdapterOptionValue(
+  value: unknown,
   environment: NodeJS.ProcessEnv,
-): string | null {
-  return normalizeIssueState(trackerKind) === "notion"
-    ? (environment[NOTION_CANONICAL_API_KEY_ENV] ?? null)
-    : (environment[LINEAR_CANONICAL_API_KEY_ENV] ?? null);
-}
+): unknown {
+  if (typeof value !== "string") {
+    return value;
+  }
 
-function readAdapterOption(
-  adapterOptions: Readonly<Record<string, unknown>>,
-  key: string,
-): string | null {
-  const value = adapterOptions[key];
-  return typeof value === "string" && value.trim() !== "" ? value : null;
+  const resolved = resolveEnvReference(value, environment);
+  if (resolved !== null) {
+    return resolved;
+  }
+
+  return value.startsWith("$") ? null : value;
 }
 
 function readStateConcurrencyMap(

@@ -576,14 +576,46 @@ export function readNotionTrackerAdapterOptions(
   adapterOptions: Readonly<Record<string, unknown>>,
 ): NotionTrackerAdapterOptions {
   return {
-    dataSourceId: readString(adapterOptions.dataSourceId),
-    titleProperty: readString(adapterOptions.titleProperty),
-    statusProperty: readString(adapterOptions.statusProperty),
-    identifierProperty: readString(adapterOptions.identifierProperty),
-    descriptionProperty: readString(adapterOptions.descriptionProperty),
-    priorityProperty: readString(adapterOptions.priorityProperty),
-    labelsProperty: readString(adapterOptions.labelsProperty),
-    blockedByProperty: readString(adapterOptions.blockedByProperty),
+    dataSourceId: readAdapterOptionString(
+      adapterOptions,
+      "data_source_id",
+      "dataSourceId",
+    ),
+    titleProperty: readAdapterOptionString(
+      adapterOptions,
+      "title_property",
+      "titleProperty",
+    ),
+    statusProperty: readAdapterOptionString(
+      adapterOptions,
+      "status_property",
+      "statusProperty",
+    ),
+    identifierProperty: readAdapterOptionString(
+      adapterOptions,
+      "identifier_property",
+      "identifierProperty",
+    ),
+    descriptionProperty: readAdapterOptionString(
+      adapterOptions,
+      "description_property",
+      "descriptionProperty",
+    ),
+    priorityProperty: readAdapterOptionString(
+      adapterOptions,
+      "priority_property",
+      "priorityProperty",
+    ),
+    labelsProperty: readAdapterOptionString(
+      adapterOptions,
+      "labels_property",
+      "labelsProperty",
+    ),
+    blockedByProperty: readAdapterOptionString(
+      adapterOptions,
+      "blocked_by_property",
+      "blockedByProperty",
+    ),
   };
 }
 
@@ -759,6 +791,20 @@ function clampPageSize(pageSize: number): number {
 
 function readString(value: unknown): string | null {
   return typeof value === "string" && value.trim() !== "" ? value : null;
+}
+
+function readAdapterOptionString(
+  adapterOptions: Readonly<Record<string, unknown>>,
+  ...keys: string[]
+): string | null {
+  for (const key of keys) {
+    const value = readString(adapterOptions[key]);
+    if (value !== null) {
+      return value;
+    }
+  }
+
+  return null;
 }
 
 function requirePageId(page: unknown): string {

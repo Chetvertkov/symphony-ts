@@ -7,10 +7,19 @@ import {
   NotionTrackerClient,
   createTrackerDynamicTools,
   createTrackerFromConfig,
+  getTrackerAdapterApiKeyEnv,
+  listTrackerAdapterKinds,
+  validateTrackerAdapterConfig,
 } from "../../src/index.js";
 
 describe("tracker adapters", () => {
-  it("creates the legacy linear adapter from config", () => {
+  it("registers bundled adapters and their canonical API key env vars", () => {
+    expect(listTrackerAdapterKinds()).toEqual(["linear", "notion"]);
+    expect(getTrackerAdapterApiKeyEnv("Linear")).toBe("LINEAR_API_KEY");
+    expect(getTrackerAdapterApiKeyEnv("notion")).toBe("NOTION_API_KEY");
+  });
+
+  it("creates the linear adapter from config", () => {
     const tracker = createTrackerFromConfig(createLinearConfig(), {
       fetchFn: vi.fn<typeof fetch>(),
     });
@@ -26,7 +35,7 @@ describe("tracker adapters", () => {
     expect(tracker).toBeInstanceOf(NotionTrackerClient);
   });
 
-  it("preserves the linear dynamic tool and skips notion by default", () => {
+  it("delegates dynamic tools to the selected adapter", () => {
     const linearTools = createTrackerDynamicTools(createLinearConfig(), {
       fetchFn: vi.fn<typeof fetch>(),
     });
@@ -39,9 +48,28 @@ describe("tracker adapters", () => {
     ]);
     expect(notionTools).toEqual([]);
   });
+
+  it("reports unsupported adapter kinds with the registered options", () => {
+    expect(
+      validateTrackerAdapterConfig(
+        createLinearConfig({
+          tracker: {
+            ...createLinearConfig().tracker,
+            kind: "jira",
+          },
+        }),
+      ),
+    ).toEqual({
+      code: "unsupported_tracker_kind",
+      message:
+        "tracker.kind 'jira' is not supported. Supported adapters: linear, notion.",
+    });
+  });
 });
 
-function createLinearConfig(): ResolvedWorkflowConfig {
+function createLinearConfig(
+  overrides: Partial<ResolvedWorkflowConfig> = {},
+): ResolvedWorkflowConfig {
   return {
     workflowPath: "/repo/WORKFLOW.md",
     promptTemplate: "Prompt",
@@ -50,8 +78,8 @@ function createLinearConfig(): ResolvedWorkflowConfig {
       endpoint: "https://api.linear.app/graphql",
       apiKey: "linear-token",
       projectSlug: "ENG",
-      activeStates: ["Todo"],
-      terminalStates: ["Done"],
+      activeStates: ["Todo", "In Progress"],
+      terminalStates: ["Done", "Canceled"],
       adapterOptions: {},
     },
     polling: {
@@ -90,6 +118,7 @@ function createLinearConfig(): ResolvedWorkflowConfig {
       refreshMs: 1_000,
       renderIntervalMs: 16,
     },
+    ...overrides,
   };
 }
 
@@ -104,14 +133,14 @@ function createNotionConfig(): ResolvedWorkflowConfig {
       activeStates: ["Todo", "In Progress"],
       terminalStates: ["Done", "Canceled"],
       adapterOptions: {
-        dataSourceId: "data-source-1",
-        titleProperty: "Name",
-        statusProperty: "Status",
-        identifierProperty: "Key",
-        descriptionProperty: "Description",
-        priorityProperty: "Priority",
-        labelsProperty: "Labels",
-        blockedByProperty: "Blocked by",
+        data_source_id: "data-source-1",
+        title_property: "Name",
+        status_property: "Status",
+        identifier_property: "Key",
+        description_property: "Description",
+        priority_property: "Priority",
+        labels_property: "Labels",
+        blocked_by_property: "Blocked by",
       },
     },
   };

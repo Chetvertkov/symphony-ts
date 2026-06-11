@@ -46,6 +46,7 @@ export const SPEC_DEFAULTS = Object.freeze({
     endpoint: DEFAULT_LINEAR_ENDPOINT,
     activeStates: DEFAULT_ACTIVE_STATES,
     terminalStates: DEFAULT_TERMINAL_STATES,
+    adapterOptions: {},
     pageSize: DEFAULT_LINEAR_PAGE_SIZE,
     networkTimeoutMs: DEFAULT_LINEAR_NETWORK_TIMEOUT_MS,
   },
