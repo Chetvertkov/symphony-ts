@@ -51,7 +51,12 @@ workspace:
 # All hooks are optional (omit or set to null/empty to skip).
 # ============================================================
 hooks:
-  # Run after a new workspace directory is created.
+  # Run after a new empty workspace directory is created.
+  # This is where you normally clone or bootstrap the target repository.
+  # Example:
+  #   after_create: |
+  #     git clone git@github.com:your-org/your-repo.git .
+  #     npm install
   after_create: null
 
   # Run before each agent turn starts (fatal on non-zero exit).

@@ -85,6 +85,7 @@ codex --version   # must support codex app-server
 ### Step 2: Install Dependencies and Build
 
 ```bash
+cd /path/to/symphony-ts
 pnpm install
 pnpm build
 ```
@@ -96,6 +97,9 @@ Verify the build:
 ```bash
 node dist/src/cli/main.js --help
 ```
+
+Do not install this fork globally through npm for local development. Use the built CLI path directly
+when targeting another repository.
 
 ### Step 3: Get Your Linear API Key and Project Slug
 
@@ -113,7 +117,12 @@ Or put it in an untracked `.env.local` and source it yourself — Symphony does 
 
 ### Step 4: Create WORKFLOW.md
 
-Create a `WORKFLOW.md` in the **target repository** (the codebase Codex will work in), or in any directory you will run Symphony from.
+Create `WORKFLOW.md` in the **target repository** (the codebase Codex will work in). Symphony can
+load a workflow from any path, but keeping it in the target repository versions the tracker config,
+workspace bootstrap, and agent prompt with that codebase.
+
+Symphony creates an empty per-issue workspace first. Use `hooks.after_create` to clone or otherwise
+populate the target repository before Codex starts.
 
 Minimal working example:
 
@@ -137,7 +146,13 @@ polling:
   interval_ms: 30000
 
 workspace:
-  root: ~/symphony_workspaces
+  root: ~/symphony_workspaces/your-repo
+
+hooks:
+  after_create: |
+    git clone git@github.com:your-org/your-repo.git .
+    npm install
+  timeout_ms: 300000
 
 agent:
   max_concurrent_agents: 2
@@ -176,7 +191,7 @@ issue to "In Review" and leave a comment summarizing what you did.
 | `tracker.terminal_states` | States that trigger workspace cleanup | `[Closed, Cancelled, Canceled, Duplicate, Done]` |
 | `polling.interval_ms` | Poll interval in milliseconds | `30000` |
 | `workspace.root` | Root directory for all workspaces | `<os.tmpdir()>/symphony_workspaces` |
-| `hooks.after_create` | Shell command run after workspace is created | `null` |
+| `hooks.after_create` | Shell command run after a new empty workspace is created; normally clone the target repo here | `null` |
 | `hooks.before_run` | Shell command run before each agent turn (fatal on non-zero exit) | `null` |
 | `hooks.after_run` | Shell command run after each agent turn (errors suppressed) | `null` |
 | `hooks.before_remove` | Shell command run before workspace removal (errors suppressed) | `null` |
@@ -205,15 +220,20 @@ The prompt body uses **Liquid template syntax**. Available variables:
 ### Step 5: Run Symphony
 
 ```bash
-# Run from the directory containing WORKFLOW.md
-node dist/src/cli/main.js --acknowledge-high-trust-preview
+# From this symphony-ts checkout, pass the target workflow path explicitly.
+cd /path/to/symphony-ts
+node dist/src/cli/main.js /path/to/target-repo/WORKFLOW.md \
+  --acknowledge-high-trust-preview
 
-# Or specify the WORKFLOW.md path explicitly
-node dist/src/cli/main.js /path/to/your/WORKFLOW.md \
+# Or run from the target repository root; ./WORKFLOW.md is the default.
+cd /path/to/target-repo
+node /path/to/symphony-ts/dist/src/cli/main.js \
   --acknowledge-high-trust-preview
 
 # Enable the optional HTTP dashboard
-node dist/src/cli/main.js --acknowledge-high-trust-preview --port 3000
+node /path/to/symphony-ts/dist/src/cli/main.js \
+  --acknowledge-high-trust-preview \
+  --port 3000
 ```
 
 > `--acknowledge-high-trust-preview` is a required safety flag. Symphony runs agent code without sandboxing by default; this flag confirms you understand that.

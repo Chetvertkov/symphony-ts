@@ -11,54 +11,73 @@ boundary, and gives operators a clean surface for runtime visibility, retries, a
 
 ![Symphony demo showing Linear issue tracking alongside the Symphony observability dashboard](.github/media/demo.png)
 
-## Running Symphony
+## Running Symphony Locally
 
 ### Requirements
 
 - Node.js `>= 22`
-- a repository with a valid `WORKFLOW.md`
+- pnpm `>= 10`
+- a target repository with a valid `WORKFLOW.md`
 - tracker credentials such as `LINEAR_API_KEY`
 - a coding agent runtime that supports app-server mode, such as `codex app-server`
 
-### Install
+### Build the local CLI
 
 ```bash
-npm install -g symphony-ts
+cd /path/to/symphony-ts
+pnpm install
+pnpm build
 ```
 
-Verify the CLI is available:
+Verify the built CLI:
 
 ```bash
-symphony --help
+node dist/src/cli/main.js --help
 ```
 
-### Quickstart
-
-1. Go to the repository you want Symphony to operate on.
-2. Create `WORKFLOW.md` in that repository.
-3. Export `LINEAR_API_KEY`.
-4. Start Symphony from that repository root.
+This fork does not require a global `symphony` or `symphony-ts` npm install. When you want to run
+the local implementation against another repository, call the built CLI directly:
 
 ```bash
-cd /path/to/your-repo
+node /path/to/symphony-ts/dist/src/cli/main.js \
+  /path/to/target-repo/WORKFLOW.md \
+  --acknowledge-high-trust-preview \
+  --port 4321
+```
+
+### Target a Repository
+
+`WORKFLOW.md` is repository-owned policy. Put it in the target repository root when the workflow
+should travel with that codebase. Symphony reads that file, creates one workspace directory per
+eligible tracker issue, and runs Codex from inside the per-issue workspace.
+
+The positional CLI argument selects the workflow file:
+
+```bash
+cd /path/to/symphony-ts
 export LINEAR_API_KEY=your-linear-token
-symphony ./WORKFLOW.md --acknowledge-high-trust-preview --port 4321
+node dist/src/cli/main.js /path/to/target-repo/WORKFLOW.md \
+  --acknowledge-high-trust-preview \
+  --port 4321
 ```
 
 If you do not pass a path, Symphony defaults to `./WORKFLOW.md`:
 
 ```bash
-symphony --acknowledge-high-trust-preview --port 4321
+cd /path/to/target-repo
+export LINEAR_API_KEY=your-linear-token
+node /path/to/symphony-ts/dist/src/cli/main.js \
+  --acknowledge-high-trust-preview \
+  --port 4321
 ```
 
-You can also run without global install:
+Symphony does not generate `WORKFLOW.md` for you. It expects a repository-owned workflow file.
+Relative paths in workflow config, such as `workspace.root`, resolve from the workflow file's
+directory.
 
-```bash
-npx symphony-ts ./WORKFLOW.md --acknowledge-high-trust-preview --port 4321
-```
-
-Symphony does not generate `WORKFLOW.md` for you. It expects a repository-owned workflow file and,
-by default, reads `./WORKFLOW.md` from the current working directory.
+The workspace is empty when Symphony first creates it. Configure `hooks.after_create` to clone or
+prepare the target repository before Codex starts; otherwise the agent will run in an empty
+directory.
 
 <details>
 <summary>Agent setup prompt</summary>
@@ -69,7 +88,7 @@ Set up and start Symphony in this repository.
 Requirements:
 - create or update WORKFLOW.md for Linear
 - use LINEAR_API_KEY from the environment or tell me exactly which variable is missing
-- install symphony-ts and start Symphony with the required --acknowledge-high-trust-preview flag
+- build the local symphony-ts checkout and start it with the required --acknowledge-high-trust-preview flag
 - if startup fails, stop and report the exact failing step and command
 ```
 
@@ -85,6 +104,10 @@ tracker:
   project_slug: your-linear-project-slug
 workspace:
   root: ~/code/symphony-workspaces
+hooks:
+  after_create: |
+    git clone git@github.com:your-org/your-repo.git .
+    npm install
 codex:
   command: codex app-server
 server:
@@ -100,6 +123,7 @@ as `WORKFLOW.md`, then change these fields before starting Symphony:
 
 - `tracker.project_slug`
 - `workspace.root`
+- `hooks.after_create`
 - `codex.command`
 
 If you want the dashboard, keep `server.port` in the workflow or pass `--port` on the CLI.
@@ -158,14 +182,14 @@ pnpm lint           # Biome lint check
 pnpm format         # Biome auto-format
 ```
 
-### Run From Source
-
-If you are developing Symphony itself rather than using the published CLI:
+### Run Against a Target Project
 
 ```bash
 pnpm install
 pnpm build
-node dist/src/cli/main.js --acknowledge-high-trust-preview
+node dist/src/cli/main.js /path/to/target-repo/WORKFLOW.md \
+  --acknowledge-high-trust-preview \
+  --port 4321
 ```
 
 See [docs/DEV_GUIDE.md](docs/DEV_GUIDE.md) for a full walkthrough including Linear setup, `WORKFLOW.md` configuration, and troubleshooting.
