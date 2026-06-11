@@ -1,9 +1,10 @@
 ---
 # ============================================================
-# tracker — Issue tracker connection (currently only "linear")
+# tracker — Issue tracker adapter connection
 # ============================================================
 tracker:
-  # Tracker backend. Only "linear" is supported.
+  # Tracker adapter selected by this repository.
+  # Currently bundled: "linear".
   kind: linear
 
   # GraphQL endpoint for the Linear API.

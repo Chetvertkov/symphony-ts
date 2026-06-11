@@ -34,6 +34,7 @@ describe("config-resolver", () => {
 
     expect(resolved.tracker.kind).toBe("linear");
     expect(resolved.tracker.endpoint).toBe("https://api.linear.app/graphql");
+    expect(resolved.tracker.adapterOptions).toEqual({});
     expect(resolved.tracker.activeStates).toEqual(["Todo", "In Progress"]);
     expect(resolved.tracker.terminalStates).toEqual([
       "Closed",
@@ -74,6 +75,7 @@ describe("config-resolver", () => {
           tracker: {
             api_key: "$LINEAR_TOKEN",
             project_slug: "ENG",
+            board_id: "future-adapter-option",
             active_states: "Todo, In Progress, Ready for QA",
           },
           polling: {
@@ -118,6 +120,9 @@ describe("config-resolver", () => {
 
     expect(resolved.tracker.apiKey).toBe("secret-token");
     expect(resolved.tracker.projectSlug).toBe("ENG");
+    expect(resolved.tracker.adapterOptions).toEqual({
+      board_id: "future-adapter-option",
+    });
     expect(resolved.tracker.activeStates).toEqual([
       "Todo",
       "In Progress",
@@ -263,7 +268,8 @@ describe("config-resolver", () => {
       ok: false,
       error: {
         code: ERROR_CODES.unsupportedTrackerKind,
-        message: "tracker.kind 'jira' is not supported.",
+        message:
+          "tracker.kind 'jira' is not supported. Supported adapters: linear.",
       },
     });
   });

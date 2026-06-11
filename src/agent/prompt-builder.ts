@@ -4,7 +4,7 @@ import type { Issue, WorkflowDefinition } from "../domain/model.js";
 import { ERROR_CODES } from "../errors/codes.js";
 
 export const DEFAULT_WORKFLOW_PROMPT =
-  "You are working on an issue from Linear.";
+  "You are working on an issue from the configured tracker.";
 
 const liquidEngine = new Liquid({
   strictVariables: true,

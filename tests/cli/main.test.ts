@@ -231,6 +231,7 @@ function createConfig(
       projectSlug: "ENG",
       activeStates: ["Todo"],
       terminalStates: ["Done"],
+      adapterOptions: {},
     },
     polling: {
       intervalMs: 30_000,

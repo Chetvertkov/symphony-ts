@@ -241,6 +241,7 @@ Prompt body
             projectSlug: "ENG",
             activeStates: ["Todo"],
             terminalStates: ["Done"],
+            adapterOptions: {},
           },
         }),
         tracker: createTracker(),
@@ -560,6 +561,7 @@ function createConfig(
       projectSlug: "ENG",
       activeStates: ["Todo"],
       terminalStates: ["Done", "Canceled"],
+      adapterOptions: {},
     },
     polling: {
       intervalMs: 30_000,
