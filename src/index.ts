@@ -18,6 +18,7 @@ export * from "./observability/dashboard-server.js";
 export * from "./orchestrator/core.js";
 export * from "./orchestrator/runtime-host.js";
 export * from "./workspace/hooks.js";
+export * from "./tracker/adapters.js";
 export * from "./tracker/errors.js";
 export * from "./tracker/linear-client.js";
 export * from "./tracker/linear-normalize.js";

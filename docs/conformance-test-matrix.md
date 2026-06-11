@@ -29,11 +29,12 @@ validation, and cleanup of temporary workspace artifacts before each run.
 
 - `tests/tracker/linear-client.test.ts`
 - `tests/tracker/linear-normalize.test.ts`
+- `tests/tracker/adapters.test.ts`
 
 Covered behaviors include active-state candidate fetch, `slugId` project
 filtering, empty-state short-circuiting, pagination, blockers and label
-normalization, state refresh by GraphQL ID list, and typed request/payload
-error mapping.
+normalization, state refresh by GraphQL ID list, typed request/payload error
+mapping, and adapter registry selection.
 
 ## 17.4 Orchestrator Dispatch, Reconciliation, and Retry
 

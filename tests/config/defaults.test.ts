@@ -44,6 +44,7 @@ describe("SPEC_DEFAULTS", () => {
 
   it("keeps the frozen default tree internally consistent", () => {
     expect(SPEC_DEFAULTS.polling.intervalMs).toBe(DEFAULT_POLL_INTERVAL_MS);
+    expect(SPEC_DEFAULTS.tracker.adapterOptions).toEqual({});
     expect(SPEC_DEFAULTS.agent.maxConcurrentAgents).toBe(
       DEFAULT_MAX_CONCURRENT_AGENTS,
     );

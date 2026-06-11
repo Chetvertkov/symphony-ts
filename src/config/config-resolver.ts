@@ -5,6 +5,10 @@ import type { WorkflowDefinition } from "../domain/model.js";
 import { normalizeIssueState } from "../domain/model.js";
 import { ERROR_CODES } from "../errors/codes.js";
 import {
+  getTrackerAdapterApiKeyEnv,
+  validateTrackerAdapterConfig,
+} from "../tracker/adapters.js";
+import {
   DEFAULT_ACTIVE_STATES,
   DEFAULT_CODEX_COMMAND,
   DEFAULT_HOOK_TIMEOUT_MS,
@@ -31,7 +35,14 @@ import type {
   ResolvedWorkflowConfig,
 } from "./types.js";
 
-const LINEAR_CANONICAL_API_KEY_ENV = "LINEAR_API_KEY";
+const TRACKER_COMMON_CONFIG_KEYS = new Set([
+  "kind",
+  "endpoint",
+  "api_key",
+  "project_slug",
+  "active_states",
+  "terminal_states",
+]);
 
 export function resolveWorkflowConfig(
   workflow: WorkflowDefinition & { workflowPath: string },
@@ -46,16 +57,18 @@ export function resolveWorkflowConfig(
   const codex = asRecord(config.codex);
   const server = asRecord(config.server);
   const observability = asRecord(config.observability);
+  const trackerKind = readString(tracker.kind) ?? DEFAULT_TRACKER_KIND;
+  const trackerApiKeyEnv = getTrackerAdapterApiKeyEnv(trackerKind);
 
   return {
     workflowPath: workflow.workflowPath,
     promptTemplate: workflow.promptTemplate,
     tracker: {
-      kind: readString(tracker.kind) ?? DEFAULT_TRACKER_KIND,
+      kind: trackerKind,
       endpoint: readString(tracker.endpoint) ?? DEFAULT_LINEAR_ENDPOINT,
       apiKey:
         resolveEnvReference(readString(tracker.api_key), environment) ??
-        environment[LINEAR_CANONICAL_API_KEY_ENV] ??
+        (trackerApiKeyEnv === null ? null : environment[trackerApiKeyEnv]) ??
         null,
       projectSlug: readString(tracker.project_slug),
       activeStates: readStringList(
@@ -66,6 +79,7 @@ export function resolveWorkflowConfig(
         tracker.terminal_states,
         DEFAULT_TERMINAL_STATES,
       ),
+      adapterOptions: readAdapterOptions(tracker),
     },
     polling: {
       intervalMs: readInteger(polling.interval_ms) ?? DEFAULT_POLL_INTERVAL_MS,
@@ -130,33 +144,9 @@ export function resolveWorkflowConfig(
 export function validateDispatchConfig(
   config: ResolvedWorkflowConfig,
 ): DispatchValidationResult {
-  const trackerKind = config.tracker.kind?.trim();
-  if (!trackerKind) {
-    return invalid(
-      ERROR_CODES.configInvalid,
-      "tracker.kind must be present before dispatch.",
-    );
-  }
-
-  if (trackerKind !== DEFAULT_TRACKER_KIND) {
-    return invalid(
-      ERROR_CODES.unsupportedTrackerKind,
-      `tracker.kind '${trackerKind}' is not supported.`,
-    );
-  }
-
-  if (!config.tracker.apiKey || config.tracker.apiKey.trim() === "") {
-    return invalid(
-      ERROR_CODES.trackerCredentialsMissing,
-      "tracker.api_key must be configured before dispatch.",
-    );
-  }
-
-  if (!config.tracker.projectSlug || config.tracker.projectSlug.trim() === "") {
-    return invalid(
-      ERROR_CODES.configInvalid,
-      "tracker.project_slug must be configured before dispatch.",
-    );
+  const trackerValidation = validateTrackerAdapterConfig(config);
+  if (trackerValidation !== null) {
+    return invalid(trackerValidation.code, trackerValidation.message);
   }
 
   if (config.codex.command.trim() === "") {
@@ -273,6 +263,18 @@ function readStringList(value: unknown, fallback: readonly string[]): string[] {
   }
 
   return [...fallback];
+}
+
+function readAdapterOptions(
+  tracker: Record<string, unknown>,
+): Readonly<Record<string, unknown>> {
+  return Object.freeze(
+    Object.fromEntries(
+      Object.entries(tracker).filter(
+        ([key]) => !TRACKER_COMMON_CONFIG_KEYS.has(key),
+      ),
+    ),
+  );
 }
 
 function readStateConcurrencyMap(

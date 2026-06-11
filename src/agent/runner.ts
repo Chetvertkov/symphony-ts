@@ -6,7 +6,6 @@ import {
   type CodexDynamicTool,
   type CodexTurnResult,
 } from "../codex/app-server-client.js";
-import { createLinearGraphqlDynamicTool } from "../codex/linear-graphql-tool.js";
 import type { ResolvedWorkflowConfig } from "../config/types.js";
 import {
   type Issue,
@@ -18,6 +17,7 @@ import {
   normalizeIssueState,
 } from "../domain/model.js";
 import { applyCodexEventToSession } from "../logging/session-metrics.js";
+import { createTrackerDynamicTools } from "../tracker/adapters.js";
 import type { IssueTracker } from "../tracker/tracker.js";
 import { WorkspaceHookRunner } from "../workspace/hooks.js";
 import { validateWorkspaceCwd } from "../workspace/path-safety.js";
@@ -315,17 +315,9 @@ export class AgentRunner {
   }
 
   private createDynamicTools(): CodexDynamicTool[] {
-    if (normalizeIssueState(this.config.tracker.kind ?? "") !== "linear") {
-      return [];
-    }
-
-    return [
-      createLinearGraphqlDynamicTool({
-        endpoint: this.config.tracker.endpoint,
-        apiKey: this.config.tracker.apiKey,
-        ...(this.fetchFn === undefined ? {} : { fetchFn: this.fetchFn }),
-      }),
-    ];
+    return createTrackerDynamicTools(this.config, {
+      ...(this.fetchFn === undefined ? {} : { fetchFn: this.fetchFn }),
+    });
   }
 
   private async refreshIssueState(issue: Issue): Promise<Issue> {
