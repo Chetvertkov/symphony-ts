@@ -25,7 +25,7 @@ import {
   type RefreshResponse,
   startDashboardServer,
 } from "../observability/dashboard-server.js";
-import { LinearTrackerClient } from "../tracker/linear-client.js";
+import { createTrackerFromConfig } from "../tracker/adapters.js";
 import type { IssueTracker } from "../tracker/tracker.js";
 import { WorkspaceHookRunner } from "../workspace/hooks.js";
 import { WorkspaceManager } from "../workspace/workspace-manager.js";
@@ -464,7 +464,7 @@ export async function startRuntimeService(
       ...(options.stdout === undefined ? {} : { stdout: options.stdout }),
     }));
   let currentConfig = options.config;
-  let tracker = options.tracker ?? createLinearTrackerFromConfig(currentConfig);
+  let tracker = options.tracker ?? createTrackerFromConfig(currentConfig);
   let workspaceManager =
     options.workspaceManager ??
     createWorkspaceManagerFromConfig(currentConfig, logger);
@@ -546,7 +546,7 @@ export async function startRuntimeService(
             currentConfig = nextConfig;
 
             if (usesManagedTracker) {
-              tracker = createLinearTrackerFromConfig(nextConfig);
+              tracker = createTrackerFromConfig(nextConfig);
             }
 
             if (usesManagedWorkspaceManager) {
@@ -758,17 +758,6 @@ async function cleanupTerminalIssueWorkspaces(input: {
       },
     );
   }
-}
-
-function createLinearTrackerFromConfig(
-  config: ResolvedWorkflowConfig,
-): LinearTrackerClient {
-  return new LinearTrackerClient({
-    endpoint: config.tracker.endpoint,
-    apiKey: config.tracker.apiKey,
-    projectSlug: config.tracker.projectSlug,
-    activeStates: config.tracker.activeStates,
-  });
 }
 
 function createWorkspaceManagerFromConfig(

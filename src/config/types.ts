@@ -13,6 +13,7 @@ export interface WorkflowTrackerConfig {
   projectSlug: string | null;
   activeStates: string[];
   terminalStates: string[];
+  adapterOptions: Readonly<Record<string, unknown>>;
 }
 
 export interface WorkflowPollingConfig {

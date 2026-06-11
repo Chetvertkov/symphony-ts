@@ -13,6 +13,7 @@ import {
   DEFAULT_MAX_CONCURRENT_AGENTS,
   DEFAULT_MAX_RETRY_BACKOFF_MS,
   DEFAULT_MAX_TURNS,
+  DEFAULT_NOTION_ENDPOINT,
   DEFAULT_OBSERVABILITY_ENABLED,
   DEFAULT_OBSERVABILITY_REFRESH_MS,
   DEFAULT_OBSERVABILITY_RENDER_INTERVAL_MS,
@@ -42,6 +43,16 @@ describe("config-resolver", () => {
       "Duplicate",
       "Done",
     ]);
+    expect(resolved.tracker.adapterOptions).toEqual({
+      dataSourceId: null,
+      titleProperty: null,
+      statusProperty: null,
+      identifierProperty: null,
+      descriptionProperty: null,
+      priorityProperty: null,
+      labelsProperty: null,
+      blockedByProperty: null,
+    });
     expect(resolved.polling.intervalMs).toBe(DEFAULT_POLL_INTERVAL_MS);
     expect(resolved.workspace.root).toBe(DEFAULT_WORKSPACE_ROOT);
     expect(resolved.hooks.timeoutMs).toBe(DEFAULT_HOOK_TIMEOUT_MS);
@@ -200,6 +211,44 @@ describe("config-resolver", () => {
     expect(resolved.tracker.apiKey).toBe("canonical-secret");
   });
 
+  it("resolves notion defaults, canonical auth, and adapter options", () => {
+    const resolved = resolveWorkflowConfig(
+      {
+        workflowPath: "/repo/WORKFLOW.md",
+        promptTemplate: "Prompt",
+        config: {
+          tracker: {
+            kind: "notion",
+            data_source_id: "data-source-1",
+            title_property: "Name",
+            status_property: "Status",
+            identifier_property: "Key",
+            description_property: "Description",
+            priority_property: "Priority",
+            labels_property: "Labels",
+            blocked_by_property: "Blocked by",
+          },
+        },
+      },
+      {
+        NOTION_API_KEY: "notion-secret",
+      },
+    );
+
+    expect(resolved.tracker.endpoint).toBe(DEFAULT_NOTION_ENDPOINT);
+    expect(resolved.tracker.apiKey).toBe("notion-secret");
+    expect(resolved.tracker.adapterOptions).toEqual({
+      dataSourceId: "data-source-1",
+      titleProperty: "Name",
+      statusProperty: "Status",
+      identifierProperty: "Key",
+      descriptionProperty: "Description",
+      priorityProperty: "Priority",
+      labelsProperty: "Labels",
+      blockedByProperty: "Blocked by",
+    });
+  });
+
   it("resolves env-backed workspace roots and expands the home directory", () => {
     const envBacked = resolveWorkflowConfig(
       {
@@ -279,6 +328,109 @@ describe("config-resolver", () => {
               kind: "linear",
               api_key: "token",
               project_slug: "ENG",
+            },
+          },
+        },
+        {},
+      ),
+    );
+
+    expect(validation).toEqual({ ok: true });
+  });
+
+  it("requires notion data_source_id during dispatch validation", () => {
+    const validation = validateDispatchConfig(
+      resolveWorkflowConfig(
+        {
+          workflowPath: "/repo/WORKFLOW.md",
+          promptTemplate: "Prompt",
+          config: {
+            tracker: {
+              kind: "notion",
+              api_key: "token",
+              title_property: "Name",
+              status_property: "Status",
+            },
+          },
+        },
+        {},
+      ),
+    );
+
+    expect(validation).toEqual({
+      ok: false,
+      error: {
+        code: ERROR_CODES.configInvalid,
+        message: "tracker.data_source_id must be configured before dispatch.",
+      },
+    });
+  });
+
+  it("requires notion title_property and status_property during dispatch validation", () => {
+    const missingTitle = validateDispatchConfig(
+      resolveWorkflowConfig(
+        {
+          workflowPath: "/repo/WORKFLOW.md",
+          promptTemplate: "Prompt",
+          config: {
+            tracker: {
+              kind: "notion",
+              api_key: "token",
+              data_source_id: "data-source-1",
+              status_property: "Status",
+            },
+          },
+        },
+        {},
+      ),
+    );
+    const missingStatus = validateDispatchConfig(
+      resolveWorkflowConfig(
+        {
+          workflowPath: "/repo/WORKFLOW.md",
+          promptTemplate: "Prompt",
+          config: {
+            tracker: {
+              kind: "notion",
+              api_key: "token",
+              data_source_id: "data-source-1",
+              title_property: "Name",
+            },
+          },
+        },
+        {},
+      ),
+    );
+
+    expect(missingTitle).toEqual({
+      ok: false,
+      error: {
+        code: ERROR_CODES.configInvalid,
+        message: "tracker.title_property must be configured before dispatch.",
+      },
+    });
+    expect(missingStatus).toEqual({
+      ok: false,
+      error: {
+        code: ERROR_CODES.configInvalid,
+        message: "tracker.status_property must be configured before dispatch.",
+      },
+    });
+  });
+
+  it("accepts dispatch when notion prerequisites are present", () => {
+    const validation = validateDispatchConfig(
+      resolveWorkflowConfig(
+        {
+          workflowPath: "/repo/WORKFLOW.md",
+          promptTemplate: "Prompt",
+          config: {
+            tracker: {
+              kind: "notion",
+              api_key: "token",
+              data_source_id: "data-source-1",
+              title_property: "Name",
+              status_property: "Status",
             },
           },
         },

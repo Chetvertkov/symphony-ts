@@ -6,6 +6,9 @@ Symphony-ts turns project work into isolated, autonomous implementation runs: it
 your tracker, creates a dedicated workspace for each issue, runs a coding agent inside that
 boundary, and gives operators a clean surface for runtime visibility, retries, and control.
 
+Tracker support is adapter-based. This fork supports both Linear and Notion without changing the
+orchestrator flow.
+
 > [!WARNING]
 > Symphony is intended for trusted environments.
 
@@ -18,7 +21,7 @@ boundary, and gives operators a clean surface for runtime visibility, retries, a
 - Node.js `>= 22`
 - pnpm `>= 10`
 - a target repository with a valid `WORKFLOW.md`
-- tracker credentials such as `LINEAR_API_KEY`
+- tracker credentials such as `LINEAR_API_KEY` or `NOTION_API_KEY`
 - a coding agent runtime that supports app-server mode, such as `codex app-server`
 
 ### Build the local CLI
@@ -148,6 +151,11 @@ that tool's credential via environment variables before launching Symphony.
 For a complete reference covering every supported field with defaults and inline documentation, see
 [docs/WORKFLOW.template.md](docs/WORKFLOW.template.md).
 
+For adapter-specific setup:
+
+- [docs/TRACKER_ADAPTERS.md](docs/TRACKER_ADAPTERS.md)
+- [docs/NOTION_ADAPTER.md](docs/NOTION_ADAPTER.md)
+
 ### What You Get
 
 Once Symphony is running, it will:
@@ -198,7 +206,7 @@ See [docs/DEV_GUIDE.md](docs/DEV_GUIDE.md) for a full walkthrough including Line
 
 | Item | Status |
 | --- | --- |
-| Implement Symphony and Linear integration | ✅ Complete |
+| Implement Symphony tracker adapters (Linear, Notion) | ✅ Complete |
 | Support more platforms such as GitHub Projects | 🟡 Planned |
 | Support a local board GUI | 🟡 Planned |
 | Support more coding agents such as Claude Code scheduling | 🟡 Planned |

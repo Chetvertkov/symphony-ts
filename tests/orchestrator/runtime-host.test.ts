@@ -394,6 +394,7 @@ function createConfig(): ResolvedWorkflowConfig {
       projectSlug: "project",
       activeStates: ["Todo", "In Progress", "In Review"],
       terminalStates: ["Done", "Canceled"],
+      adapterOptions: {},
     },
     polling: {
       intervalMs: 30_000,
