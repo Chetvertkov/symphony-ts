@@ -220,6 +220,10 @@ See [docs/DEV_GUIDE.md](docs/DEV_GUIDE.md) for a full walkthrough including Line
 | Implement Symphony and Linear integration | ✅ Complete |
 | Add pluggable tracker adapter layer | ✅ Complete |
 | Add bundled Notion tracker adapter | ✅ Complete |
+| Add a per-ticket status screen with current agent work and changed files | 🟡 Planned |
+| Refine the dashboard home page around operator attention and daily use | 🟡 Planned |
+| Stabilize ticket/worktree continuation across restarts and retries | 🟡 Planned |
+| Notify operators when a newer `symphony-ts` version is available | 🟡 Planned |
 | Support more platforms such as GitHub Projects | 🟡 Planned |
 | Support a local board GUI | 🟡 Planned |
 | Support more coding agents such as Claude Code scheduling | 🟡 Planned |
