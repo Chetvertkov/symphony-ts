@@ -130,13 +130,25 @@ export class NotionTrackerClient implements IssueTracker {
     }
 
     const schema = await this.getSchema();
-    return Promise.all(
-      issueIds.map(async (issueId) =>
-        normalizeNotionIssueState(await this.retrievePage(issueId), {
-          status: schema.properties.status,
-          identifier: schema.properties.identifier,
-        }),
-      ),
+    const snapshots = await Promise.all(
+      issueIds.map(async (issueId) => {
+        try {
+          return normalizeNotionIssueState(await this.retrievePage(issueId), {
+            status: schema.properties.status,
+            identifier: schema.properties.identifier,
+          });
+        } catch (error) {
+          if (isNotionMissingPageError(error)) {
+            return null;
+          }
+
+          throw error;
+        }
+      }),
+    );
+
+    return snapshots.filter(
+      (snapshot): snapshot is IssueStateSnapshot => snapshot !== null,
     );
   }
 
@@ -175,7 +187,14 @@ export class NotionTrackerClient implements IssueTracker {
 
   private async getSchema(): Promise<NotionResolvedSchema> {
     if (this.schemaPromise === null) {
-      this.schemaPromise = this.loadSchema();
+      const schemaPromise = this.loadSchema().catch((error) => {
+        if (this.schemaPromise === schemaPromise) {
+          this.schemaPromise = null;
+        }
+
+        throw error;
+      });
+      this.schemaPromise = schemaPromise;
     }
 
     return this.schemaPromise;
@@ -814,6 +833,27 @@ function buildNotionUrl(
 
 function clampPageSize(pageSize: number): number {
   return Math.max(1, Math.min(pageSize, 100));
+}
+
+function isNotionMissingPageError(error: unknown): boolean {
+  if (
+    !(error instanceof TrackerError) ||
+    error.code !== ERROR_CODES.notionApiStatus
+  ) {
+    return false;
+  }
+
+  const errorCode =
+    error.details &&
+    typeof error.details === "object" &&
+    !Array.isArray(error.details) &&
+    typeof (error.details as { code?: unknown }).code === "string"
+      ? ((error.details as { code: string }).code ?? null)
+      : null;
+
+  return (
+    errorCode === "object_not_found" || errorCode === "restricted_resource"
+  );
 }
 
 function toNotionPathSegment(value: string): string {

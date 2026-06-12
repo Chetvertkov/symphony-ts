@@ -362,6 +362,98 @@ describe("NotionTrackerClient", () => {
     ]);
   });
 
+  it("omits missing or inaccessible pages during state refresh", async () => {
+    const fetchFn = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(jsonResponse(dataSourceSchema()))
+      .mockResolvedValueOnce(
+        jsonResponse(
+          {
+            code: "object_not_found",
+            message: "Page is gone.",
+          },
+          404,
+        ),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse(
+          notionPage({
+            id: "page-2",
+            key: "NOTION-2",
+            state: "Done",
+          }),
+        ),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse(
+          {
+            code: "restricted_resource",
+            message: "No access to this page.",
+          },
+          403,
+        ),
+      );
+
+    const client = createClient({ fetchFn });
+
+    await expect(
+      client.fetchIssueStatesByIds(["page-1", "page-2", "page-3"]),
+    ).resolves.toEqual([
+      {
+        id: "page-2",
+        identifier: "NOTION-2",
+        state: "Done",
+      },
+    ]);
+  });
+
+  it("retries schema loading after a transient schema fetch failure", async () => {
+    const fetchFn = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(
+        jsonResponse(
+          {
+            code: "internal_server_error",
+            message: "Notion hiccuped.",
+          },
+          500,
+        ),
+      )
+      .mockResolvedValueOnce(jsonResponse(dataSourceSchema()))
+      .mockResolvedValueOnce(
+        jsonResponse({
+          object: "list",
+          results: [
+            notionPage({
+              id: "page-1",
+              key: "NOTION-1",
+              title: "Recovered task",
+              state: "Todo",
+            }),
+          ],
+          has_more: false,
+          next_cursor: null,
+        }),
+      );
+
+    const client = createClient({ fetchFn });
+
+    await expect(client.fetchCandidateIssues()).rejects.toThrow(
+      expect.objectContaining<Partial<TrackerError>>({
+        code: ERROR_CODES.notionApiStatus,
+        status: 500,
+      }),
+    );
+    await expect(client.fetchCandidateIssues()).resolves.toEqual([
+      expect.objectContaining({
+        id: "page-1",
+        identifier: "NOTION-1",
+        state: "Todo",
+      }),
+    ]);
+    expect(fetchFn).toHaveBeenCalledTimes(3);
+  });
+
   it("maps missing auth and missing data source configuration to typed errors", async () => {
     const missingAuthClient = createClient({
       apiKey: null,

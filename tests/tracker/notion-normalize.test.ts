@@ -176,6 +176,56 @@ describe("notion-normalize", () => {
     });
   });
 
+  it("treats trashed pages as inactive during normalization and reconciliation", () => {
+    const page = {
+      object: "page",
+      id: "01234567-89ab-cdef-0123-456789abcdef",
+      in_trash: true,
+      properties: {
+        Name: {
+          id: "title",
+          type: "title",
+          title: [{ plain_text: "Trashed task" }],
+        },
+        Status: {
+          id: "status-id",
+          type: "status",
+          status: {
+            name: "In Progress",
+          },
+        },
+        Key: {
+          id: "key-id",
+          type: "rich_text",
+          rich_text: [{ plain_text: "NOTION-99" }],
+        },
+      },
+    };
+
+    expect(
+      normalizeNotionIssue(page, {
+        properties: {
+          ...createPropertyMap(),
+          description: null,
+          priority: null,
+          labels: null,
+          blockedBy: null,
+        },
+      }).state,
+    ).toBe("Trashed");
+
+    expect(
+      normalizeNotionIssueState(page, {
+        status: createPropertyMap().status,
+        identifier: createPropertyMap().identifier,
+      }),
+    ).toEqual({
+      id: "01234567-89ab-cdef-0123-456789abcdef",
+      identifier: "NOTION-99",
+      state: "Trashed",
+    });
+  });
+
   it("reads number properties when they are configured as the issue identifier", () => {
     const properties: NotionIssuePropertyMap = {
       ...createPropertyMap(),

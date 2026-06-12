@@ -46,10 +46,12 @@ export function normalizeNotionIssue(
     readPlainTextProperty(titleProperty),
     options.properties.title.name,
   );
-  const state = requireNonEmptyString(
-    readStateName(statusProperty),
-    options.properties.status.name,
-  );
+  const state = isTrashedPage(notionPage)
+    ? "Trashed"
+    : requireNonEmptyString(
+        readStateName(statusProperty),
+        options.properties.status.name,
+      );
   const identifier =
     readIdentifier(notionPage.properties, options.properties.identifier) ??
     toShortNotionPageId(id);
@@ -97,10 +99,9 @@ export function normalizeNotionIssueState(
   const identifier =
     readIdentifier(notionPage.properties, options.identifier) ??
     toShortNotionPageId(id);
-  const state = requireNonEmptyString(
-    readStateName(statusProperty),
-    options.status.name,
-  );
+  const state = isTrashedPage(notionPage)
+    ? "Trashed"
+    : requireNonEmptyString(readStateName(statusProperty), options.status.name);
 
   return {
     id,
@@ -155,6 +156,8 @@ interface NotionPageObject {
   url?: unknown;
   created_time?: unknown;
   last_edited_time?: unknown;
+  in_trash?: unknown;
+  archived?: unknown;
   properties?: unknown;
 }
 
@@ -269,6 +272,10 @@ function findProperty(
 
 function isPropertyValue(value: unknown): value is NotionPropertyValue {
   return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function isTrashedPage(page: NotionPageObject): boolean {
+  return page.in_trash === true || page.archived === true;
 }
 
 function readIdentifier(
