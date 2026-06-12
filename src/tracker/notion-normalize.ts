@@ -285,6 +285,11 @@ function readIdentifier(
     return stringValue;
   }
 
+  const numericValue = readNumberProperty(property);
+  if (numericValue !== null) {
+    return String(numericValue);
+  }
+
   const uniqueId = property.unique_id;
   if (uniqueId && typeof uniqueId === "object") {
     const prefix =

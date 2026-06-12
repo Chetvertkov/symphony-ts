@@ -74,6 +74,10 @@ interface NotionResolvedSchema {
   properties: NotionIssuePropertyMap;
 }
 
+const NOTION_RETRIABLE_STATUS_CODES = new Set([429, 529]);
+const NOTION_MAX_RATE_LIMIT_RETRIES = 2;
+const NOTION_FALLBACK_RETRY_AFTER_MS = 1_000;
+
 export class NotionTrackerClient implements IssueTracker {
   private readonly endpoint: string;
   private readonly apiKey: string | null;
@@ -367,28 +371,28 @@ export class NotionTrackerClient implements IssueTracker {
       }
     }
 
-    await Promise.all(
-      [...missingIds].map(async (relationId) => {
-        try {
-          const preview = readNotionIssuePreview(
-            await this.retrievePage(relationId),
-            {
-              status: properties.status,
-              identifier: properties.identifier,
-            },
-          );
-          lookup.set(relationId, {
-            identifier: preview.identifier,
-            state: preview.state,
-          });
-        } catch {
-          lookup.set(relationId, {
-            identifier: null,
-            state: null,
-          });
-        }
-      }),
-    );
+    // Hydrate missing blockers sequentially to avoid bursting past
+    // Notion's per-connection rate limits when a page references many blockers.
+    for (const relationId of missingIds) {
+      try {
+        const preview = readNotionIssuePreview(
+          await this.retrievePage(relationId),
+          {
+            status: properties.status,
+            identifier: properties.identifier,
+          },
+        );
+        lookup.set(relationId, {
+          identifier: preview.identifier,
+          state: preview.state,
+        });
+      } catch {
+        lookup.set(relationId, {
+          identifier: null,
+          state: null,
+        });
+      }
+    }
 
     return lookup;
   }
@@ -403,7 +407,7 @@ export class NotionTrackerClient implements IssueTracker {
     while (true) {
       const response: NotionPropertyListResponse = await this.requestJson({
         method: "GET",
-        path: `/pages/${encodeURIComponent(pageId)}/properties/${encodeURIComponent(propertyId)}`,
+        path: `/pages/${encodeURIComponent(pageId)}/properties/${toNotionPathSegment(propertyId)}`,
         query:
           startCursor === null
             ? {
@@ -476,7 +480,30 @@ export class NotionTrackerClient implements IssueTracker {
     query?: Record<string, string>;
     body?: Record<string, unknown>;
   }): Promise<T> {
-    const response = await this.fetchWithTimeout(input);
+    let response: Response | null = null;
+    for (
+      let attempt = 0;
+      attempt <= NOTION_MAX_RATE_LIMIT_RETRIES;
+      attempt += 1
+    ) {
+      response = await this.fetchWithTimeout(input);
+      if (
+        !NOTION_RETRIABLE_STATUS_CODES.has(response.status) ||
+        attempt === NOTION_MAX_RATE_LIMIT_RETRIES
+      ) {
+        break;
+      }
+
+      await sleep(readRetryAfterMs(response) ?? NOTION_FALLBACK_RETRY_AFTER_MS);
+    }
+
+    if (response === null) {
+      throw new TrackerError(
+        ERROR_CODES.notionApiRequest,
+        "Notion request did not produce a response.",
+      );
+    }
+
     const body = await parseNotionResponseBody(response);
 
     if (!response.ok) {
@@ -789,6 +816,14 @@ function clampPageSize(pageSize: number): number {
   return Math.max(1, Math.min(pageSize, 100));
 }
 
+function toNotionPathSegment(value: string): string {
+  try {
+    return encodeURIComponent(decodeURIComponent(value));
+  } catch {
+    return encodeURIComponent(value);
+  }
+}
+
 function readString(value: unknown): string | null {
   return typeof value === "string" && value.trim() !== "" ? value : null;
 }
@@ -839,4 +874,24 @@ async function parseNotionResponseBody(response: Response): Promise<unknown> {
       { cause: error },
     );
   }
+}
+
+function readRetryAfterMs(response: Response): number | null {
+  const rawValue = response.headers.get("retry-after");
+  if (rawValue === null) {
+    return null;
+  }
+
+  const seconds = Number.parseInt(rawValue, 10);
+  if (!Number.isFinite(seconds) || seconds < 0) {
+    return null;
+  }
+
+  return seconds * 1_000;
+}
+
+async function sleep(durationMs: number): Promise<void> {
+  await new Promise((resolve) => {
+    setTimeout(resolve, durationMs);
+  });
 }

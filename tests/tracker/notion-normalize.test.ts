@@ -176,6 +176,60 @@ describe("notion-normalize", () => {
     });
   });
 
+  it("reads number properties when they are configured as the issue identifier", () => {
+    const properties: NotionIssuePropertyMap = {
+      ...createPropertyMap(),
+      identifier: {
+        id: "key-id",
+        name: "Key",
+        type: "number",
+      },
+    };
+
+    const page = {
+      object: "page",
+      id: "fedcba98-7654-3210-fedc-ba9876543210",
+      properties: {
+        Name: {
+          id: "title",
+          type: "title",
+          title: [{ plain_text: "Numeric identifier" }],
+        },
+        Status: {
+          id: "status-id",
+          type: "status",
+          status: {
+            name: "Todo",
+          },
+        },
+        Key: {
+          id: "key-id",
+          type: "number",
+          number: 2048,
+        },
+      },
+    };
+
+    expect(
+      normalizeNotionIssue(page, {
+        properties: {
+          ...properties,
+          description: null,
+          priority: null,
+          labels: null,
+          blockedBy: null,
+        },
+      }).identifier,
+    ).toBe("2048");
+
+    expect(
+      normalizeNotionIssueState(page, {
+        status: properties.status,
+        identifier: properties.identifier,
+      }).identifier,
+    ).toBe("2048");
+  });
+
   it("rejects malformed page payloads with a typed tracker error", () => {
     expect(() =>
       normalizeNotionIssue(null, {

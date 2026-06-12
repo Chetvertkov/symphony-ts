@@ -11,7 +11,13 @@ describe("NotionTrackerClient", () => {
   it("fetches candidate issues via data source queries, pagination, sorts, and blocker lookups", async () => {
     const fetchFn = vi
       .fn<typeof fetch>()
-      .mockResolvedValueOnce(jsonResponse(dataSourceSchema()))
+      .mockResolvedValueOnce(
+        jsonResponse(
+          dataSourceSchema({
+            blockedById: "f%5C%5C%3Ap",
+          }),
+        ),
+      )
       .mockResolvedValueOnce(
         jsonResponse({
           object: "list",
@@ -65,7 +71,7 @@ describe("NotionTrackerClient", () => {
           next_cursor: null,
           type: "property_item",
           property_item: {
-            id: "blocked-id",
+            id: "f%5C%5C%3Ap",
             type: "relation",
             next_url: null,
           },
@@ -143,8 +149,168 @@ describe("NotionTrackerClient", () => {
     });
 
     const relationUrl = new URL(fetchFn.mock.calls[3]?.[0] as string);
-    expect(relationUrl.pathname).toBe("/v1/pages/page-1/properties/blocked-id");
+    expect(relationUrl.pathname).toBe(
+      "/v1/pages/page-1/properties/f%5C%5C%3Ap",
+    );
     expect(relationUrl.searchParams.get("page_size")).toBe("100");
+  });
+
+  it("hydrates missing blocker pages sequentially", async () => {
+    let step = 0;
+    let firstBlockerResolved = false;
+    let hasFirstBlockerResolver = false;
+    let secondCalledBeforeFirstResolved = false;
+    let resolveFirstBlocker!: (response: Response) => void;
+
+    const fetchFn = vi.fn<typeof fetch>(async (input) => {
+      step += 1;
+
+      switch (step) {
+        case 1:
+          return jsonResponse(dataSourceSchema());
+        case 2:
+          return jsonResponse({
+            object: "list",
+            results: [
+              notionPage({
+                id: "page-1",
+                key: "NOTION-1",
+                title: "Task with two blockers",
+                state: "Todo",
+                blockedBy: {
+                  relation: [{ id: "blocker-1" }, { id: "blocker-2" }],
+                  has_more: false,
+                },
+              }),
+            ],
+            has_more: false,
+            next_cursor: null,
+          });
+        case 3:
+          return await new Promise<Response>((resolve) => {
+            hasFirstBlockerResolver = true;
+            resolveFirstBlocker = (response) => {
+              firstBlockerResolved = true;
+              resolve(response);
+            };
+          });
+        case 4:
+          secondCalledBeforeFirstResolved = !firstBlockerResolved;
+          return jsonResponse(
+            notionPage({
+              id: "blocker-2",
+              key: "NOTION-3",
+              title: "Second blocker",
+              state: "Done",
+            }),
+          );
+        default:
+          throw new Error(`Unexpected fetch step ${step} for ${String(input)}`);
+      }
+    });
+
+    const client = createClient({ fetchFn });
+    const issuesPromise = client.fetchCandidateIssues();
+
+    await new Promise((resolve) => {
+      setTimeout(resolve, 0);
+    });
+
+    expect(step).toBe(3);
+    if (!hasFirstBlockerResolver) {
+      throw new Error("Expected first blocker request to be pending.");
+    }
+
+    resolveFirstBlocker(
+      jsonResponse(
+        notionPage({
+          id: "blocker-1",
+          key: "NOTION-2",
+          title: "First blocker",
+          state: "Done",
+        }),
+      ),
+    );
+
+    const issues = await issuesPromise;
+
+    expect(step).toBe(4);
+    expect(secondCalledBeforeFirstResolved).toBe(false);
+    expect(issues[0]?.blockedBy).toEqual([
+      {
+        id: "blocker-1",
+        identifier: "NOTION-2",
+        state: "Done",
+      },
+      {
+        id: "blocker-2",
+        identifier: "NOTION-3",
+        state: "Done",
+      },
+    ]);
+  });
+
+  it("retries rate-limited blocker lookups using Retry-After", async () => {
+    const fetchFn = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(jsonResponse(dataSourceSchema()))
+      .mockResolvedValueOnce(
+        jsonResponse({
+          object: "list",
+          results: [
+            notionPage({
+              id: "page-1",
+              key: "NOTION-1",
+              title: "Task with one blocker",
+              state: "Todo",
+              blockedBy: {
+                relation: [{ id: "blocker-1" }],
+                has_more: false,
+              },
+            }),
+          ],
+          has_more: false,
+          next_cursor: null,
+        }),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse(
+          {
+            code: "rate_limited",
+            message: "Back off a little.",
+          },
+          429,
+          {
+            "retry-after": "0",
+          },
+        ),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse(
+          notionPage({
+            id: "blocker-1",
+            key: "NOTION-0",
+            title: "Blocking task",
+            state: "Done",
+          }),
+        ),
+      );
+
+    const client = createClient({ fetchFn });
+
+    await expect(client.fetchCandidateIssues()).resolves.toEqual([
+      expect.objectContaining({
+        identifier: "NOTION-1",
+        blockedBy: [
+          {
+            id: "blocker-1",
+            identifier: "NOTION-0",
+            state: "Done",
+          },
+        ],
+      }),
+    ]);
+    expect(fetchFn).toHaveBeenCalledTimes(4);
   });
 
   it("returns empty immediately when fetchIssuesByStates receives no states", async () => {
@@ -225,13 +391,16 @@ describe("NotionTrackerClient", () => {
       fetchFn: vi
         .fn<typeof fetch>()
         .mockResolvedValueOnce(jsonResponse(dataSourceSchema()))
-        .mockResolvedValueOnce(
+        .mockImplementation(async () =>
           jsonResponse(
             {
               code: "rate_limited",
               message: "You have been rate limited.",
             },
             429,
+            {
+              "retry-after": "0",
+            },
           ),
         ),
     });
@@ -294,7 +463,7 @@ function createClient(
   });
 }
 
-function dataSourceSchema(): unknown {
+function dataSourceSchema(overrides: { blockedById?: string } = {}): unknown {
   return {
     object: "data_source",
     id: "data-source-1",
@@ -324,7 +493,7 @@ function dataSourceSchema(): unknown {
         type: "multi_select",
       },
       "Blocked by": {
-        id: "blocked-id",
+        id: overrides.blockedById ?? "blocked-id",
         type: "relation",
       },
     },
@@ -398,11 +567,16 @@ function notionPage(input: {
   };
 }
 
-function jsonResponse(body: unknown, status = 200): Response {
+function jsonResponse(
+  body: unknown,
+  status = 200,
+  headers: Record<string, string> = {},
+): Response {
   return new Response(JSON.stringify(body), {
     status,
     headers: {
       "content-type": "application/json",
+      ...headers,
     },
   });
 }
