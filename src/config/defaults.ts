@@ -2,6 +2,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 export const DEFAULT_LINEAR_ENDPOINT = "https://api.linear.app/graphql";
+export const DEFAULT_NOTION_ENDPOINT = "https://api.notion.com/v1";
+export const DEFAULT_NOTION_VERSION = "2026-03-11";
 export const DEFAULT_TRACKER_KIND = "linear";
 export const DEFAULT_ACTIVE_STATES = ["Todo", "In Progress"] as const;
 export const DEFAULT_TERMINAL_STATES = [
@@ -33,6 +35,8 @@ export const DEFAULT_OBSERVABILITY_RENDER_INTERVAL_MS = 16;
 
 export const DEFAULT_LINEAR_PAGE_SIZE = 50;
 export const DEFAULT_LINEAR_NETWORK_TIMEOUT_MS = 30_000;
+export const DEFAULT_NOTION_PAGE_SIZE = 100;
+export const DEFAULT_NOTION_NETWORK_TIMEOUT_MS = 30_000;
 
 export const WORKFLOW_FILENAME = "WORKFLOW.md";
 

@@ -23,6 +23,8 @@ export * from "./tracker/errors.js";
 export * from "./tracker/linear-client.js";
 export * from "./tracker/linear-normalize.js";
 export * from "./tracker/linear-queries.js";
+export * from "./tracker/notion-client.js";
+export * from "./tracker/notion-normalize.js";
 export * from "./tracker/tracker.js";
 export * from "./workspace/path-safety.js";
 export * from "./workspace/workspace-manager.js";

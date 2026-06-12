@@ -19,6 +19,7 @@ import {
   DEFAULT_MAX_CONCURRENT_AGENTS_BY_STATE,
   DEFAULT_MAX_RETRY_BACKOFF_MS,
   DEFAULT_MAX_TURNS,
+  DEFAULT_NOTION_ENDPOINT,
   DEFAULT_OBSERVABILITY_ENABLED,
   DEFAULT_OBSERVABILITY_REFRESH_MS,
   DEFAULT_OBSERVABILITY_RENDER_INTERVAL_MS,
@@ -65,7 +66,8 @@ export function resolveWorkflowConfig(
     promptTemplate: workflow.promptTemplate,
     tracker: {
       kind: trackerKind,
-      endpoint: readString(tracker.endpoint) ?? DEFAULT_LINEAR_ENDPOINT,
+      endpoint:
+        readString(tracker.endpoint) ?? defaultTrackerEndpoint(trackerKind),
       apiKey:
         resolveEnvReference(readString(tracker.api_key), environment) ??
         (trackerApiKeyEnv === null ? null : environment[trackerApiKeyEnv]) ??
@@ -79,7 +81,7 @@ export function resolveWorkflowConfig(
         tracker.terminal_states,
         DEFAULT_TERMINAL_STATES,
       ),
-      adapterOptions: readAdapterOptions(tracker),
+      adapterOptions: readAdapterOptions(tracker, environment),
     },
     polling: {
       intervalMs: readInteger(polling.interval_ms) ?? DEFAULT_POLL_INTERVAL_MS,
@@ -194,6 +196,22 @@ function readScript(value: unknown): string | null {
   return script === "" ? null : script;
 }
 
+function readAdapterOptions(
+  tracker: Record<string, unknown>,
+  environment: NodeJS.ProcessEnv,
+): Readonly<Record<string, unknown>> {
+  return Object.freeze(
+    Object.fromEntries(
+      Object.entries(tracker)
+        .filter(([key]) => !TRACKER_COMMON_CONFIG_KEYS.has(key))
+        .map(([key, value]) => [
+          key,
+          resolveTrackerAdapterOptionValue(value, environment),
+        ]),
+    ),
+  );
+}
+
 function readInteger(value: unknown): number | null {
   if (typeof value === "number" && Number.isInteger(value)) {
     return value;
@@ -265,16 +283,26 @@ function readStringList(value: unknown, fallback: readonly string[]): string[] {
   return [...fallback];
 }
 
-function readAdapterOptions(
-  tracker: Record<string, unknown>,
-): Readonly<Record<string, unknown>> {
-  return Object.freeze(
-    Object.fromEntries(
-      Object.entries(tracker).filter(
-        ([key]) => !TRACKER_COMMON_CONFIG_KEYS.has(key),
-      ),
-    ),
-  );
+function defaultTrackerEndpoint(trackerKind: string): string {
+  return normalizeIssueState(trackerKind) === "notion"
+    ? DEFAULT_NOTION_ENDPOINT
+    : DEFAULT_LINEAR_ENDPOINT;
+}
+
+function resolveTrackerAdapterOptionValue(
+  value: unknown,
+  environment: NodeJS.ProcessEnv,
+): unknown {
+  if (typeof value !== "string") {
+    return value;
+  }
+
+  const resolved = resolveEnvReference(value, environment);
+  if (resolved !== null) {
+    return resolved;
+  }
+
+  return value.startsWith("$") ? null : value;
 }
 
 function readStateConcurrencyMap(

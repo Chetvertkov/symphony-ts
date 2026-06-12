@@ -407,28 +407,37 @@ Implement {{ issue.identifier }} attempt={{ attempt }}
     });
 
     const workspacePath = join(workspaceRoot, "issue-1");
-    await vi.waitFor(async () => {
-      const state = await service.runtimeHost.getRuntimeSnapshot();
-      expect(state.counts.running + state.counts.retrying).toBeGreaterThan(0);
-      await expect(
-        readFile(join(workspacePath, "created.txt"), "utf8"),
-      ).resolves.toBe("created");
-      await expect(
-        readFile(join(workspacePath, "before-run.txt"), "utf8"),
-      ).resolves.toBe("before");
-    });
+    await vi.waitFor(
+      async () => {
+        const state = await service.runtimeHost.getRuntimeSnapshot();
+        expect(state.counts.running + state.counts.retrying).toBeGreaterThan(0);
+        await expect(
+          readFile(join(workspacePath, "created.txt"), "utf8"),
+        ).resolves.toBe("created");
+        await expect(
+          readFile(join(workspacePath, "before-run.txt"), "utf8"),
+        ).resolves.toBe("before");
+      },
+      { timeout: 3_000 },
+    );
 
-    await vi.waitFor(async () => {
-      const state = await service.runtimeHost.getRuntimeSnapshot();
-      expect(state.counts.retrying).toBe(1);
-    });
+    await vi.waitFor(
+      async () => {
+        const state = await service.runtimeHost.getRuntimeSnapshot();
+        expect(state.counts.retrying).toBe(1);
+      },
+      { timeout: 3_000 },
+    );
     await service.runtimeHost.runRetryTimer("issue-1");
-    await vi.waitFor(async () => {
-      const state = await service.runtimeHost.getRuntimeSnapshot();
-      expect(state.counts.running).toBe(0);
-      expect(state.counts.retrying).toBe(0);
-      expect([...service.runtimeHost.getState().claimed]).toEqual([]);
-    });
+    await vi.waitFor(
+      async () => {
+        const state = await service.runtimeHost.getRuntimeSnapshot();
+        expect(state.counts.running).toBe(0);
+        expect(state.counts.retrying).toBe(0);
+        expect([...service.runtimeHost.getState().claimed]).toEqual([]);
+      },
+      { timeout: 3_000 },
+    );
 
     const issueDetail = await sendRequest(service.dashboard?.port ?? 0, {
       method: "GET",

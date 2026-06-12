@@ -7,6 +7,10 @@ import type {
 import { ERROR_CODES } from "../errors/codes.js";
 import { TrackerError } from "./errors.js";
 import { LinearTrackerClient } from "./linear-client.js";
+import {
+  NotionTrackerClient,
+  readNotionTrackerAdapterOptions,
+} from "./notion-client.js";
 import type { IssueTracker } from "./tracker.js";
 
 export interface TrackerDynamicToolOptions {
@@ -20,7 +24,10 @@ export interface TrackerAdapterDefinition {
   validateConfig(
     config: ResolvedWorkflowConfig,
   ): DispatchValidationFailure | null;
-  createTracker(config: ResolvedWorkflowConfig): IssueTracker;
+  createTracker(
+    config: ResolvedWorkflowConfig,
+    options?: TrackerDynamicToolOptions,
+  ): IssueTracker;
   createDynamicTools(
     config: ResolvedWorkflowConfig,
     options?: TrackerDynamicToolOptions,
@@ -51,12 +58,13 @@ const LINEAR_ADAPTER: TrackerAdapterDefinition = {
 
     return null;
   },
-  createTracker(config) {
+  createTracker(config, options) {
     return new LinearTrackerClient({
       endpoint: config.tracker.endpoint,
       apiKey: config.tracker.apiKey,
       projectSlug: config.tracker.projectSlug,
       activeStates: config.tracker.activeStates,
+      ...(options?.fetchFn === undefined ? {} : { fetchFn: options.fetchFn }),
     });
   },
   createDynamicTools(config, options) {
@@ -70,7 +78,60 @@ const LINEAR_ADAPTER: TrackerAdapterDefinition = {
   },
 };
 
-const TRACKER_ADAPTERS = Object.freeze([LINEAR_ADAPTER]);
+const NOTION_ADAPTER: TrackerAdapterDefinition = {
+  kind: "notion",
+  displayName: "Notion",
+  canonicalApiKeyEnv: "NOTION_API_KEY",
+  validateConfig(config) {
+    if (!config.tracker.apiKey || config.tracker.apiKey.trim() === "") {
+      return {
+        code: ERROR_CODES.trackerCredentialsMissing,
+        message: "tracker.api_key must be configured before dispatch.",
+      };
+    }
+
+    const options = readNotionTrackerAdapterOptions(
+      config.tracker.adapterOptions,
+    );
+
+    if (!options.dataSourceId) {
+      return {
+        code: ERROR_CODES.configInvalid,
+        message: "tracker.data_source_id must be configured before dispatch.",
+      };
+    }
+
+    if (!options.titleProperty) {
+      return {
+        code: ERROR_CODES.configInvalid,
+        message: "tracker.title_property must be configured before dispatch.",
+      };
+    }
+
+    if (!options.statusProperty) {
+      return {
+        code: ERROR_CODES.configInvalid,
+        message: "tracker.status_property must be configured before dispatch.",
+      };
+    }
+
+    return null;
+  },
+  createTracker(config, options) {
+    return new NotionTrackerClient({
+      endpoint: config.tracker.endpoint,
+      apiKey: config.tracker.apiKey,
+      activeStates: config.tracker.activeStates,
+      ...readNotionTrackerAdapterOptions(config.tracker.adapterOptions),
+      ...(options?.fetchFn === undefined ? {} : { fetchFn: options.fetchFn }),
+    });
+  },
+  createDynamicTools() {
+    return [];
+  },
+};
+
+const TRACKER_ADAPTERS = Object.freeze([LINEAR_ADAPTER, NOTION_ADAPTER]);
 
 export function listTrackerAdapterKinds(): string[] {
   return TRACKER_ADAPTERS.map((adapter) => adapter.kind);
@@ -119,6 +180,7 @@ export function validateTrackerAdapterConfig(
 
 export function createTrackerFromConfig(
   config: ResolvedWorkflowConfig,
+  options?: TrackerDynamicToolOptions,
 ): IssueTracker {
   const adapter = getTrackerAdapterDefinition(config.tracker.kind);
   if (adapter === null) {
@@ -128,7 +190,7 @@ export function createTrackerFromConfig(
     );
   }
 
-  return adapter.createTracker(config);
+  return adapter.createTracker(config, options);
 }
 
 export function createTrackerDynamicTools(

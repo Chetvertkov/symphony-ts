@@ -4,21 +4,35 @@
 # ============================================================
 tracker:
   # Tracker adapter selected by this repository.
-  # Currently bundled: "linear".
+  # Currently bundled: "linear" and "notion".
   kind: linear
 
   # GraphQL endpoint for the Linear API.
   # Default: https://api.linear.app/graphql
   endpoint: https://api.linear.app/graphql
 
-  # Linear API key. Use $ENV_VAR syntax to read from environment,
-  # or set the LINEAR_API_KEY environment variable directly.
-  # Required for dispatch.
+  # Tracker API key. Use $ENV_VAR syntax to read from environment.
+  # Canonical env fallback:
+  # - linear -> LINEAR_API_KEY
+  # - notion -> NOTION_API_KEY
   api_key: $LINEAR_API_KEY
 
-  # Linear project slug (the short identifier visible in issue URLs).
-  # Required for dispatch. Example: ENG, MYPROJECT-abc123
+  # Linear-only: project slug (the short identifier visible in issue URLs).
+  # Required for tracker.kind: linear. Example: ENG, MYPROJECT-abc123
   project_slug: YOUR_PROJECT_SLUG
+
+  # Notion alternative:
+  # kind: notion
+  # endpoint: https://api.notion.com/v1
+  # api_key: $NOTION_API_KEY
+  # data_source_id: YOUR_NOTION_DATA_SOURCE_ID
+  # title_property: Name
+  # status_property: Status
+  # identifier_property: Key
+  # description_property: Description
+  # priority_property: Priority
+  # labels_property: Labels
+  # blocked_by_property: Blocked by
 
   # Issue states that are eligible for the agent to pick up.
   # Default: [Todo, In Progress]
@@ -171,7 +185,7 @@ observability:
   render_interval_ms: 16
 ---
 
-You are implementing work for Linear issue {{ issue.identifier }}.
+You are implementing work for tracker issue {{ issue.identifier }}.
 
 <!-- Replace the lines below with your actual agent instructions. -->
 
@@ -196,23 +210,10 @@ If the agent must call networked tools during a turn:
 
 When finished:
 
-1. Update the Linear issue state to "Done" using the `linear_graphql` tool.
-   First, query the available workflow states to find the "Done" state ID:
-   ```graphql
-   query GetWorkflowStates {
-     workflowStates {
-       nodes { id name }
-     }
-   }
-   ```
-   Then update the issue:
-   ```graphql
-   mutation CompleteIssue($id: String!, $stateId: String!) {
-     issueUpdate(id: $id, input: { stateId: $stateId }) {
-       success
-     }
-   }
-   ```
+1. Update the tracker ticket to the required handoff state.
+   - For Linear, use the `linear_graphql` tool.
+   - For Notion, use `NOTION_API_KEY` from the workflow environment and make a normal REST call.
+     There is no built-in `notion_api` dynamic tool in the MVP adapter yet.
 
 2. Provide a summary:
    - What changed
