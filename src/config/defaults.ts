@@ -6,6 +6,10 @@ export const DEFAULT_NOTION_ENDPOINT = "https://api.notion.com/v1";
 export const DEFAULT_NOTION_VERSION = "2026-03-11";
 export const DEFAULT_TRACKER_KIND = "linear";
 export const DEFAULT_ACTIVE_STATES = ["Todo", "In Progress"] as const;
+export const DEFAULT_TRACKER_CLAIM_STATE = "In Progress";
+export const DEFAULT_TRACKER_HANDOFF_STATES = ["In Review", "Review"] as const;
+export const DEFAULT_TRACKER_BLOCKED_STATE = "Needs decision";
+export const DEFAULT_REQUIRE_CLAIM_BEFORE_AGENT = true;
 export const DEFAULT_TERMINAL_STATES = [
   "Closed",
   "Cancelled",
@@ -45,6 +49,10 @@ export const SPEC_DEFAULTS = Object.freeze({
     kind: DEFAULT_TRACKER_KIND,
     endpoint: DEFAULT_LINEAR_ENDPOINT,
     activeStates: DEFAULT_ACTIVE_STATES,
+    claimState: DEFAULT_TRACKER_CLAIM_STATE,
+    handoffStates: DEFAULT_TRACKER_HANDOFF_STATES,
+    blockedState: DEFAULT_TRACKER_BLOCKED_STATE,
+    requireClaimBeforeAgent: DEFAULT_REQUIRE_CLAIM_BEFORE_AGENT,
     terminalStates: DEFAULT_TERMINAL_STATES,
     adapterOptions: {},
     pageSize: DEFAULT_LINEAR_PAGE_SIZE,

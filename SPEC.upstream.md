@@ -26,9 +26,11 @@ require stricter approvals or sandboxing.
 
 Important boundary:
 
-- Symphony is a scheduler/runner and tracker reader.
-- Ticket writes (state transitions, comments, PR links) are typically performed by the coding agent
-  using tools available in the workflow/runtime environment.
+- Symphony is a scheduler/runner and tracker reader with optional adapter-neutral lifecycle
+  write-back for claim and handoff transitions.
+- Workflow-specific ticket writes such as comments, PR links, and provider-specific metadata are
+  typically performed by the coding agent using tools available in the workflow/runtime
+  environment.
 - A successful run may end at a workflow-defined handoff state (for example `Human Review`), not
   necessarily `Done`.
 
@@ -50,8 +52,8 @@ Important boundary:
 - Rich web UI or multi-tenant control plane.
 - Prescribing a specific dashboard or terminal UI implementation.
 - General-purpose workflow engine or distributed job scheduler.
-- Built-in business logic for how to edit tickets, PRs, or comments. (That logic lives in the
-  workflow prompt and agent tooling.)
+- Built-in platform-specific business logic for how to edit tickets, PRs, or comments. Generic
+  lifecycle claim/handoff write-back may be implemented through the tracker adapter contract.
 - Mandating strong sandbox controls beyond what the coding agent and host OS provide.
 - Mandating a single default approval, sandbox, or operator-confirmation posture for all
   implementations.
@@ -1209,11 +1211,13 @@ Orchestrator behavior on tracker errors:
 
 ### 11.5 Tracker Writes (Important Boundary)
 
-Symphony does not require first-class tracker write APIs in the orchestrator.
+Symphony does not require platform-specific tracker write APIs in the orchestrator.
 
-- Ticket mutations (state transitions, comments, PR metadata) are typically handled by the coding
-  agent using tools defined by the workflow prompt.
-- The service remains a scheduler/runner and tracker reader.
+- Adapters may implement optional lifecycle write methods for claim and handoff transitions.
+- Ticket mutations outside that generic lifecycle, such as comments and PR metadata, are typically
+  handled by the coding agent using tools defined by the workflow prompt.
+- The service remains a scheduler/runner and tracker reader; adapter-specific API details stay in
+  the adapter.
 - Workflow-specific success often means "reached the next handoff state" (for example
   `Human Review`) rather than tracker terminal state `Done`.
 - If the optional `linear_graphql` client-side tool extension is implemented, it is still part of
@@ -2098,8 +2102,7 @@ Use the same validation profiles as Section 17:
 - TODO: Persist retry queue and session metadata across process restarts.
 - TODO: Make observability settings configurable in workflow front matter without prescribing UI
   implementation details.
-- TODO: Add first-class tracker write APIs (comments/state transitions) in the orchestrator instead
-  of only via agent tools.
+- TODO: Add first-class comment/checkpoint write APIs after lifecycle claim and handoff write-back.
 - TODO: Add pluggable issue tracker adapters beyond Linear.
 
 ### 18.3 Operational Validation Before Production (Recommended)

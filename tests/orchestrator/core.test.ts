@@ -194,6 +194,147 @@ describe("orchestrator core", () => {
     expect(timers.scheduled[0]?.delayMs).toBe(1_000);
   });
 
+  it("blocks dispatch before worker spawn when tracker claim write-back fails", async () => {
+    const timers = createFakeTimerScheduler();
+    const spawnCalls: string[] = [];
+    const tracker = {
+      ...createTracker({
+        candidates: [
+          createIssue({ id: "1", identifier: "ISSUE-1", state: "Todo" }),
+        ],
+      }),
+      claimIssue: async () => {
+        throw new Error("Notion write denied");
+      },
+      handoffIssue: async () => {
+        throw new Error("not used");
+      },
+    };
+    const orchestrator = new OrchestratorCore({
+      config: createConfig(),
+      tracker,
+      timerScheduler: timers,
+      now: () => new Date("2026-03-06T00:00:05.000Z"),
+      spawnWorker: async ({ issue }) => {
+        spawnCalls.push(issue.id);
+        return {
+          workerHandle: { pid: 1001 },
+          monitorHandle: { ref: "monitor-1" },
+        };
+      },
+    });
+
+    const result = await orchestrator.pollTick();
+
+    expect(result.dispatchedIssueIds).toEqual([]);
+    expect(result.lifecycleWriteBlockers).toEqual([
+      {
+        issueId: "1",
+        issueIdentifier: "ISSUE-1",
+        operation: "claim",
+        error: "tracker_claim_failed: Notion write denied",
+      },
+    ]);
+    expect(spawnCalls).toEqual([]);
+    expect(orchestrator.getState().retryAttempts["1"]?.error).toBe(
+      "tracker_claim_failed: Notion write denied",
+    );
+    expect(timers.scheduled[0]?.delayMs).toBe(10_000);
+  });
+
+  it("suppresses continuation after successful structured handoff", async () => {
+    const timers = createFakeTimerScheduler();
+    const orchestrator = createOrchestrator({ timerScheduler: timers });
+
+    await orchestrator.pollTick();
+    const retryEntry = orchestrator.onWorkerExit({
+      issueId: "1",
+      outcome: "normal",
+      handoff: {
+        status: "succeeded",
+        metadata: {
+          readyForReview: true,
+          prUrl: "https://github.com/acme/repo/pull/12",
+          prNumber: "12",
+          headSha: "abc123",
+          validationSummary: "pnpm test passed",
+          risks: null,
+        },
+        result: {
+          issue: { id: "1", identifier: "ISSUE-1", state: "In Review" },
+          state: "In Review",
+        },
+      },
+    });
+
+    expect(retryEntry).toBeNull();
+    expect(orchestrator.getState().retryAttempts).toEqual({});
+    expect([...orchestrator.getState().claimed]).toEqual([]);
+    expect(timers.scheduled).toEqual([]);
+  });
+
+  it("holds for operator action without scheduling continuation when handoff write-back fails", async () => {
+    const timers = createFakeTimerScheduler();
+    const orchestrator = createOrchestrator({ timerScheduler: timers });
+
+    await orchestrator.pollTick();
+    const retryEntry = orchestrator.onWorkerExit({
+      issueId: "1",
+      outcome: "normal",
+      handoff: {
+        status: "failed",
+        error: "Notion status write failed",
+        metadata: {
+          readyForReview: true,
+          prUrl: "https://github.com/acme/repo/pull/12",
+          prNumber: "12",
+          headSha: "abc123",
+          validationSummary: "pnpm test passed",
+          risks: null,
+        },
+      },
+    });
+
+    expect(retryEntry).toMatchObject({
+      issueId: "1",
+      identifier: "ISSUE-1",
+      attempt: 1,
+      error: "tracker_handoff_failed: Notion status write failed",
+      timerHandle: null,
+    });
+    expect(timers.scheduled).toEqual([]);
+  });
+
+  it("holds for operator action when repeated normal exits make no progress and omit handoff", async () => {
+    const timers = createFakeTimerScheduler();
+    const orchestrator = createOrchestrator({ timerScheduler: timers });
+
+    await orchestrator.pollTick();
+    const firstRetry = orchestrator.onWorkerExit({
+      issueId: "1",
+      outcome: "normal",
+      progressSignature: "same-status-no-pr",
+    });
+    expect(firstRetry?.error).toBeNull();
+
+    await orchestrator.onRetryTimer("1");
+    const secondRetry = orchestrator.onWorkerExit({
+      issueId: "1",
+      outcome: "normal",
+      progressSignature: "same-status-no-pr",
+    });
+
+    expect(secondRetry).toMatchObject({
+      issueId: "1",
+      identifier: "ISSUE-1",
+      attempt: 2,
+      error:
+        "no_progress_or_handoff_missing: worker exited normally without structured handoff and without new tracker or PR evidence",
+      timerHandle: null,
+    });
+    expect(timers.scheduled).toHaveLength(1);
+  });
+
   it("schedules exponential backoff retries for abnormal exits and caps the delay", async () => {
     const timers = createFakeTimerScheduler();
     const orchestrator = createOrchestrator({
@@ -551,6 +692,10 @@ function createConfig(overrides?: {
       apiKey: "token",
       projectSlug: "project",
       activeStates: ["Todo", "In Progress", "In Review"],
+      claimState: "In Progress",
+      handoffStates: ["In Review", "Review"],
+      blockedState: "Needs decision",
+      requireClaimBeforeAgent: true,
       terminalStates: ["Done", "Canceled"],
       adapterOptions: {},
     },

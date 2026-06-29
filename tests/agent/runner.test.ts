@@ -199,6 +199,145 @@ describe("AgentRunner", () => {
     });
   });
 
+  it("claims write-capable tracker issues before creating a Codex client", async () => {
+    const root = await createRoot();
+    const createCodexClient = vi.fn((input) =>
+      createStubCodexClient([], input, {
+        statuses: ["completed"],
+      }),
+    );
+    const tracker = {
+      ...createTracker({
+        refreshStates: [
+          { id: "issue-1", identifier: "ABC-123", state: "Done" },
+        ],
+      }),
+      claimIssue: vi.fn(async () => ({
+        issue: { id: "issue-1", identifier: "ABC-123", state: "In Progress" },
+        state: "In Progress",
+      })),
+      handoffIssue: vi.fn(),
+    };
+    const runner = new AgentRunner({
+      config: createConfig(root, "unused"),
+      tracker,
+      createCodexClient,
+    });
+
+    const result = await runner.run({
+      issue: { ...ISSUE_FIXTURE, state: "Todo" },
+      attempt: null,
+    });
+
+    expect(result.runAttempt.status).toBe("succeeded");
+    expect(tracker.claimIssue).toHaveBeenCalledWith({
+      issue: expect.objectContaining({ id: "issue-1", state: "Todo" }),
+      lifecycle: expect.objectContaining({ claimState: "In Progress" }),
+    });
+    expect(createCodexClient).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not create a Codex client when tracker claim write-back fails", async () => {
+    const root = await createRoot();
+    const createCodexClient = vi.fn();
+    const tracker = {
+      ...createTracker(),
+      claimIssue: vi.fn(async () => {
+        throw new Error("Notion status write failed");
+      }),
+      handoffIssue: vi.fn(),
+    };
+    const runner = new AgentRunner({
+      config: createConfig(root, "unused"),
+      tracker,
+      createCodexClient,
+    });
+
+    await expect(
+      runner.run({
+        issue: { ...ISSUE_FIXTURE, state: "Todo" },
+        attempt: null,
+      }),
+    ).rejects.toMatchObject({
+      name: "AgentRunnerError",
+      message: "Notion status write failed",
+    } satisfies Partial<AgentRunnerError>);
+
+    expect(createCodexClient).not.toHaveBeenCalled();
+  });
+
+  it("records structured handoff from the dynamic tool and stops refreshing active state", async () => {
+    const root = await createRoot();
+    const prompts: string[] = [];
+    const tracker = {
+      ...createTracker(),
+      claimIssue: vi.fn(async () => ({
+        issue: { id: "issue-1", identifier: "ABC-123", state: "In Progress" },
+        state: "In Progress",
+      })),
+      handoffIssue: vi.fn(async () => ({
+        issue: { id: "issue-1", identifier: "ABC-123", state: "In Review" },
+        state: "In Review",
+      })),
+    };
+    const runner = new AgentRunner({
+      config: createConfig(root, "unused"),
+      tracker,
+      createCodexClient: (input) =>
+        createStubCodexClient(prompts, input, {
+          startSession: async ({ prompt }) => {
+            const handoffTool = input.dynamicTools.find(
+              (tool) => tool.name === "symphony_handoff",
+            );
+            if (handoffTool === undefined) {
+              throw new Error("Expected symphony_handoff dynamic tool.");
+            }
+            await handoffTool.execute({
+              ready_for_review: true,
+              pr_url: "https://github.com/acme/repo/pull/12",
+              pr_number: 12,
+              head_sha: "abc123",
+              validation_summary: "pnpm test passed",
+              risks: "",
+            });
+            prompts.push(prompt);
+            return {
+              status: "completed" as const,
+              threadId: "thread-1",
+              turnId: "turn-1",
+              sessionId: "thread-1-turn-1",
+              usage: null,
+              rateLimits: null,
+              message: "handoff complete",
+            };
+          },
+        }),
+    });
+
+    const result = await runner.run({
+      issue: ISSUE_FIXTURE,
+      attempt: null,
+    });
+
+    expect(result.handoff).toEqual({
+      status: "succeeded",
+      metadata: {
+        readyForReview: true,
+        prUrl: "https://github.com/acme/repo/pull/12",
+        prNumber: "12",
+        headSha: "abc123",
+        validationSummary: "pnpm test passed",
+        risks: null,
+      },
+      result: {
+        issue: { id: "issue-1", identifier: "ABC-123", state: "In Review" },
+        state: "In Review",
+      },
+    });
+    expect(result.issue.state).toBe("In Review");
+    expect(tracker.fetchIssueStatesByIds).not.toHaveBeenCalled();
+  });
+
   it("removes temporary workspace artifacts before each attempt starts", async () => {
     const root = await createRoot();
     const workspacePath = join(root, "issue-1");
@@ -467,6 +606,10 @@ function createConfig(root: string, scenario: string): ResolvedWorkflowConfig {
       apiKey: "linear-token",
       projectSlug: "example",
       activeStates: ["In Progress"],
+      claimState: "In Progress",
+      handoffStates: ["In Review", "Review"],
+      blockedState: "Needs decision",
+      requireClaimBeforeAgent: true,
       terminalStates: ["Done", "Canceled"],
       adapterOptions: {},
     },

@@ -113,6 +113,7 @@ describe("OrchestratorRuntimeHost", () => {
       rateLimits: {
         requestsRemaining: 9,
       },
+      handoff: null,
     });
     await host.waitForIdle();
 
@@ -393,6 +394,10 @@ function createConfig(): ResolvedWorkflowConfig {
       apiKey: "token",
       projectSlug: "project",
       activeStates: ["Todo", "In Progress", "In Review"],
+      claimState: "In Progress",
+      handoffStates: ["In Review", "Review"],
+      blockedState: "Needs decision",
+      requireClaimBeforeAgent: true,
       terminalStates: ["Done", "Canceled"],
       adapterOptions: {},
     },

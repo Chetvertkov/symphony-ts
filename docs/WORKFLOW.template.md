@@ -38,6 +38,24 @@ tracker:
   # Default: [Todo, In Progress]
   active_states: [Todo, In Progress]
 
+  # State Symphony writes before launching Codex when the adapter supports lifecycle write-back.
+  # Default: In Progress
+  claim_state: In Progress
+
+  # Handoff states Symphony may write after the agent calls `symphony_handoff`.
+  # The first exact option that exists in the tracker schema is used.
+  # Default: [In Review, Review]
+  handoff_states: [In Review, Review]
+
+  # Optional operator-action state name for project workflows that expose one.
+  # Default: Needs decision
+  blocked_state: Needs decision
+
+  # If true and the adapter supports lifecycle writes, failed claim write-back
+  # blocks Codex startup and schedules a cheap orchestration retry.
+  # Default: true
+  require_claim_before_agent: true
+
   # Issue states that are considered permanently finished.
   # Reaching one of these triggers workspace cleanup.
   # Default: [Closed, Cancelled, Canceled, Duplicate, Done]
@@ -210,10 +228,17 @@ If the agent must call networked tools during a turn:
 
 When finished:
 
-1. Update the tracker ticket to the required handoff state.
-   - For Linear, use the `linear_graphql` tool.
-   - For Notion, use `NOTION_API_KEY` from the workflow environment and make a normal REST call.
-     There is no built-in `notion_api` dynamic tool in the MVP adapter yet.
+1. Use the configured handoff mechanism when the repository workflow is ready for review.
+   - For write-capable adapters such as Notion, call `symphony_handoff` with:
+     - `ready_for_review: true`
+     - PR URL or number
+     - head SHA
+     - validation summary
+     - residual risks
+   - For Linear, use the `linear_graphql` tool unless your workflow provides another
+     adapter-neutral handoff path.
+   - Do not move the tracker ticket to a terminal state such as `Done` unless this workflow
+     explicitly instructs you to do so.
 
 2. Provide a summary:
    - What changed

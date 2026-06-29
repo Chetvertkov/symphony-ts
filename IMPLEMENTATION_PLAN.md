@@ -57,7 +57,29 @@ Acceptance:
 - Projects can switch between Linear and Notion by changing `tracker.kind` and adapter-specific
   fields in `WORKFLOW.md`.
 
-### Task 4: Harden Multi-Adapter Operations
+### Task 4: Add Tracker Lifecycle Write-Back
+
+Status: Complete
+
+- Added optional write-capable tracker lifecycle methods for claim and handoff transitions.
+- Implemented Notion status option discovery and page status writes for `status` and `select`
+  properties.
+- Added workflow lifecycle config for claim, handoff, blocked, and claim-before-agent behavior.
+- Added `symphony_handoff` for structured PR-ready handoff evidence.
+- Prevented Codex startup when required claim write-back fails.
+- Suppressed continuation after successful handoff and held operator-action cases for failed
+  handoff or repeated no-progress exits.
+
+Acceptance:
+
+- Notion can claim `Todo` work into `In Progress` before a Codex session starts.
+- Missing lifecycle state options produce clear errors with available Notion options.
+- Successful structured handoff moves tickets to the configured review state and suppresses
+  continuation.
+- Handoff write failures and missing progress are surfaced without launching another Codex turn.
+- Linear read and dynamic tool behavior remains unchanged.
+
+### Task 5: Harden Multi-Adapter Operations
 
 Status: Planned
 

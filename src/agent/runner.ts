@@ -18,10 +18,16 @@ import {
 } from "../domain/model.js";
 import { applyCodexEventToSession } from "../logging/session-metrics.js";
 import { createTrackerDynamicTools } from "../tracker/adapters.js";
-import type { IssueTracker } from "../tracker/tracker.js";
+import {
+  type IssueTracker,
+  type TrackerHandoffRunResult,
+  type TrackerLifecycleConfig,
+  supportsTrackerLifecycleWrite,
+} from "../tracker/tracker.js";
 import { WorkspaceHookRunner } from "../workspace/hooks.js";
 import { validateWorkspaceCwd } from "../workspace/path-safety.js";
 import { WorkspaceManager } from "../workspace/workspace-manager.js";
+import { createSymphonyHandoffDynamicTool } from "./handoff-tool.js";
 import {
   type BuildTurnPromptInput,
   buildTurnPrompt,
@@ -83,6 +89,7 @@ export interface AgentRunResult {
   turnsCompleted: number;
   lastTurn: CodexTurnResult | null;
   rateLimits: Record<string, unknown> | null;
+  handoff: TrackerHandoffRunResult | null;
 }
 
 export class AgentRunnerError extends Error {
@@ -160,6 +167,9 @@ export class AgentRunner {
     let client: AgentRunnerCodexClient | null = null;
     let lastTurn: CodexTurnResult | null = null;
     let rateLimits: Record<string, unknown> | null = null;
+    const handoffRef: { current: TrackerHandoffRunResult | null } = {
+      current: null,
+    };
     const liveSession = createEmptyLiveSession();
     const runAttempt: RunAttempt = {
       issueId: issue.id,
@@ -193,6 +203,8 @@ export class AgentRunner {
         workspacePath: workspace.path,
       });
 
+      issue = await this.claimIssueBeforeAgent(issue);
+
       runAttempt.status = "launching_agent_process";
       client = this.createCodexClient({
         command: this.config.codex.command,
@@ -203,7 +215,9 @@ export class AgentRunner {
         readTimeoutMs: this.config.codex.readTimeoutMs,
         turnTimeoutMs: this.config.codex.turnTimeoutMs,
         stallTimeoutMs: this.config.codex.stallTimeoutMs,
-        dynamicTools: this.createDynamicTools(),
+        dynamicTools: this.createDynamicTools(issue, (result) => {
+          handoffRef.current = result;
+        }),
         onEvent: (event) => {
           applyCodexEventToSession(liveSession, event);
           this.onEvent?.({
@@ -269,13 +283,34 @@ export class AgentRunner {
         });
 
         runAttempt.status = "finishing";
+        const handoff = handoffRef.current;
+        if (handoff?.status === "succeeded") {
+          issue = {
+            ...issue,
+            identifier:
+              handoff.result.issue.identifier.trim().length > 0
+                ? handoff.result.issue.identifier
+                : issue.identifier,
+            state: handoff.result.issue.state,
+          };
+          break;
+        }
+        if (handoff?.status === "failed") {
+          break;
+        }
+
         issue = await this.refreshIssueState(issue);
         if (!this.isIssueStillActive(issue)) {
           break;
         }
       }
 
-      runAttempt.status = "succeeded";
+      if (handoffRef.current?.status === "failed") {
+        runAttempt.status = "failed";
+        runAttempt.error = handoffRef.current.error;
+      } else {
+        runAttempt.status = "succeeded";
+      }
 
       return {
         issue,
@@ -285,6 +320,7 @@ export class AgentRunner {
         turnsCompleted: liveSession.turnCount,
         lastTurn,
         rateLimits,
+        handoff: handoffRef.current,
       };
     } catch (error) {
       const wrapped = this.toAgentRunnerError({
@@ -314,10 +350,58 @@ export class AgentRunner {
     }
   }
 
-  private createDynamicTools(): CodexDynamicTool[] {
-    return createTrackerDynamicTools(this.config, {
+  private createDynamicTools(
+    issue: Issue,
+    onHandoff: (result: TrackerHandoffRunResult) => void,
+  ): CodexDynamicTool[] {
+    const tools = createTrackerDynamicTools(this.config, {
       ...(this.fetchFn === undefined ? {} : { fetchFn: this.fetchFn }),
     });
+
+    if (supportsTrackerLifecycleWrite(this.tracker)) {
+      tools.push(
+        createSymphonyHandoffDynamicTool({
+          issue,
+          lifecycle: this.lifecycleConfig(),
+          tracker: this.tracker,
+          onHandoff,
+        }),
+      );
+    }
+
+    return tools;
+  }
+
+  private async claimIssueBeforeAgent(issue: Issue): Promise<Issue> {
+    if (
+      !this.config.tracker.requireClaimBeforeAgent ||
+      !supportsTrackerLifecycleWrite(this.tracker)
+    ) {
+      return issue;
+    }
+
+    const result = await this.tracker.claimIssue({
+      issue,
+      lifecycle: this.lifecycleConfig(),
+    });
+
+    return {
+      ...issue,
+      identifier:
+        result.issue.identifier.trim().length > 0
+          ? result.issue.identifier
+          : issue.identifier,
+      state: result.issue.state,
+    };
+  }
+
+  private lifecycleConfig(): TrackerLifecycleConfig {
+    return {
+      claimState: this.config.tracker.claimState,
+      handoffStates: this.config.tracker.handoffStates,
+      blockedState: this.config.tracker.blockedState,
+      requireClaimBeforeAgent: this.config.tracker.requireClaimBeforeAgent,
+    };
   }
 
   private async refreshIssueState(issue: Issue): Promise<Issue> {

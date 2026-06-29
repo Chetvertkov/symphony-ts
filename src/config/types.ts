@@ -12,6 +12,10 @@ export interface WorkflowTrackerConfig {
   apiKey: string | null;
   projectSlug: string | null;
   activeStates: string[];
+  claimState: string | null;
+  handoffStates: string[];
+  blockedState: string | null;
+  requireClaimBeforeAgent: boolean;
   terminalStates: string[];
   adapterOptions: Readonly<Record<string, unknown>>;
 }

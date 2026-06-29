@@ -9,7 +9,7 @@ Bundled adapters:
 | Kind | Auth fallback | Required fields | Dynamic tool |
 | --- | --- | --- | --- |
 | `linear` | `LINEAR_API_KEY` | `project_slug` | `linear_graphql` |
-| `notion` | `NOTION_API_KEY` | `data_source_id`, `title_property`, `status_property` | none in MVP |
+| `notion` | `NOTION_API_KEY` | `data_source_id`, `title_property`, `status_property` | `symphony_handoff` |
 
 The adapter layer exists so platforms can be added without changing orchestrator, workspace,
 dashboard, or prompt-rendering behavior.
@@ -23,6 +23,8 @@ interface IssueTracker {
   fetchCandidateIssues(): Promise<Issue[]>;
   fetchIssuesByStates(stateNames: string[]): Promise<Issue[]>;
   fetchIssueStatesByIds(issueIds: string[]): Promise<IssueStateSnapshot[]>;
+  claimIssue?(input): Promise<TrackerLifecycleTransitionResult>;
+  handoffIssue?(input): Promise<TrackerLifecycleTransitionResult>;
 }
 ```
 
@@ -44,6 +46,11 @@ The orchestrator treats every adapter the same after normalization. It sorts can
 priority, then creation time, then identifier. It dispatches only configured active states, stops
 workers when state reconciliation leaves active states, and cleans workspaces for terminal states.
 
+Lifecycle writes are optional adapter capabilities. If an adapter implements `claimIssue` and
+`handoffIssue`, Symphony can claim work before Codex starts and provide the issue-scoped
+`symphony_handoff` dynamic tool. Adapters that do not implement those methods keep their existing
+read-only behavior.
+
 ## WORKFLOW.md Selection
 
 Adapter choice belongs to each target repository:
@@ -54,6 +61,10 @@ tracker:
   api_key: $LINEAR_API_KEY
   project_slug: ENG
   active_states: [Todo, In Progress]
+  claim_state: In Progress
+  handoff_states: [In Review, Review]
+  blocked_state: Needs decision
+  require_claim_before_agent: true
   terminal_states: [Done, Canceled]
 ```
 
@@ -63,6 +74,10 @@ Common tracker fields:
 - `endpoint`: adapter API endpoint when the adapter supports overriding it.
 - `api_key`: token value or `$ENV_VAR` reference.
 - `active_states`: state names eligible for dispatch.
+- `claim_state`: state to write before launching Codex for a write-capable adapter.
+- `handoff_states`: exact state names, in preference order, for structured handoff.
+- `blocked_state`: operator-action state name reserved for workflows that use it.
+- `require_claim_before_agent`: when true, a failed claim blocks Codex startup.
 - `terminal_states`: state names that trigger terminal cleanup.
 
 Adapter-specific fields stay under `tracker`. The config resolver preserves non-common tracker keys
@@ -105,6 +120,10 @@ Recommended defaults:
 ```yaml
 tracker:
   active_states: [Todo, In Progress]
+  claim_state: In Progress
+  handoff_states: [In Review, Review]
+  blocked_state: Needs decision
+  require_claim_before_agent: true
   terminal_states: [Done, Closed, Canceled, Cancelled, Duplicate]
 ```
 
@@ -165,18 +184,24 @@ The adapter maps Notion pages to the shared `Issue` model like this:
 - Notion queries request `created_time` ascending sort; final dispatch ordering still happens in
   the orchestrator.
 
-### Notion write-back in MVP
+### Notion lifecycle write-back
 
-This adapter does not inject a built-in `notion_api` dynamic tool yet.
+The Notion adapter implements first-class lifecycle writes for the configured `status_property`.
+It validates `claim_state` and `handoff_states` against the Notion data source schema and writes
+exact matching `status` or `select` options with `PATCH /v1/pages/{page_id}`.
 
-To let an agent update a Notion ticket:
-
-1. Export `NOTION_API_KEY` before launching Symphony.
-2. Launch Codex with inherited env vars, for example
-   `codex --config shell_environment_policy.inherit=all app-server`.
-3. Allow network access in `codex.turn_sandbox_policy` when the workflow expects Notion writes.
-4. Use normal HTTPS calls from the workflow environment, for example `PATCH /v1/pages/{page_id}`
-   for status updates or `POST /v1/comments` for comments.
+- Before Codex starts, `Todo` work is claimed into `claim_state` when
+  `require_claim_before_agent` is true.
+- If claim validation or write-back fails, Symphony does not launch Codex; it queues a cheap
+  orchestration retry and surfaces `tracker_claim_failed`.
+- The agent calls `symphony_handoff` with PR URL/SHA and validation evidence when the repository
+  workflow is ready for review.
+- A successful handoff writes the first configured exact `handoff_states` match and suppresses
+  continuation.
+- If handoff status write-back fails, Symphony pauses automatic continuation and surfaces
+  `tracker_handoff_failed` for operator action.
+- Notion comments are not required for lifecycle status writes. Comment failures are degraded
+  checkpointing, not a blocker for status transition when page/status write access works.
 
 See [docs/NOTION_ADAPTER.md](./NOTION_ADAPTER.md) for full setup and examples.
 
@@ -187,8 +212,8 @@ See [docs/NOTION_ADAPTER.md](./NOTION_ADAPTER.md) for full setup and examples.
 3. Implement `IssueTracker`.
 4. Register the adapter in `src/tracker/adapters.ts`.
 5. Define adapter-specific validation in the registry entry.
-6. Add optional dynamic tools through `createDynamicTools` when the agent needs platform-native
-   write access.
+6. Add optional lifecycle methods or dynamic tools when the adapter needs platform-native write
+   access.
 7. Export public adapter APIs from `src/index.ts` when useful.
 8. Add unit tests for client requests, normalization, config validation, and registry behavior.
 9. Update `docs/WORKFLOW.template.md` and this guide with the adapter fields.

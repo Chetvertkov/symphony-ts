@@ -19,7 +19,11 @@ import {
   DEFAULT_OBSERVABILITY_RENDER_INTERVAL_MS,
   DEFAULT_POLL_INTERVAL_MS,
   DEFAULT_READ_TIMEOUT_MS,
+  DEFAULT_REQUIRE_CLAIM_BEFORE_AGENT,
   DEFAULT_STALL_TIMEOUT_MS,
+  DEFAULT_TRACKER_BLOCKED_STATE,
+  DEFAULT_TRACKER_CLAIM_STATE,
+  DEFAULT_TRACKER_HANDOFF_STATES,
   DEFAULT_TURN_TIMEOUT_MS,
   DEFAULT_WORKSPACE_ROOT,
 } from "../../src/config/defaults.js";
@@ -37,6 +41,14 @@ describe("config-resolver", () => {
     expect(resolved.tracker.endpoint).toBe("https://api.linear.app/graphql");
     expect(resolved.tracker.adapterOptions).toEqual({});
     expect(resolved.tracker.activeStates).toEqual(["Todo", "In Progress"]);
+    expect(resolved.tracker.claimState).toBe(DEFAULT_TRACKER_CLAIM_STATE);
+    expect(resolved.tracker.handoffStates).toEqual(
+      DEFAULT_TRACKER_HANDOFF_STATES,
+    );
+    expect(resolved.tracker.blockedState).toBe(DEFAULT_TRACKER_BLOCKED_STATE);
+    expect(resolved.tracker.requireClaimBeforeAgent).toBe(
+      DEFAULT_REQUIRE_CLAIM_BEFORE_AGENT,
+    );
     expect(resolved.tracker.terminalStates).toEqual([
       "Closed",
       "Cancelled",
@@ -78,6 +90,10 @@ describe("config-resolver", () => {
             project_slug: "ENG",
             board_id: "future-adapter-option",
             active_states: "Todo, In Progress, Ready for QA",
+            claim_state: "In Progress",
+            handoff_states: "In Review, Review",
+            blocked_state: "Needs decision",
+            require_claim_before_agent: "false",
           },
           polling: {
             interval_ms: "15000",
@@ -129,6 +145,10 @@ describe("config-resolver", () => {
       "In Progress",
       "Ready for QA",
     ]);
+    expect(resolved.tracker.claimState).toBe("In Progress");
+    expect(resolved.tracker.handoffStates).toEqual(["In Review", "Review"]);
+    expect(resolved.tracker.blockedState).toBe("Needs decision");
+    expect(resolved.tracker.requireClaimBeforeAgent).toBe(false);
     expect(resolved.polling.intervalMs).toBe(15_000);
     expect(resolved.workspace.root).toBe(join("/repo", "tmp/workspaces"));
     expect(resolved.hooks.beforeRun).toBe("pnpm test");

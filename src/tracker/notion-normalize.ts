@@ -7,6 +7,7 @@ export interface NotionPropertyDescriptor {
   id: string;
   name: string;
   type: string;
+  options?: string[];
 }
 
 export interface NotionIssuePropertyMap {

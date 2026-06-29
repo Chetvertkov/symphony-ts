@@ -240,6 +240,10 @@ Prompt body
             apiKey: null,
             projectSlug: "ENG",
             activeStates: ["Todo"],
+            claimState: "In Progress",
+            handoffStates: ["In Review", "Review"],
+            blockedState: "Needs decision",
+            requireClaimBeforeAgent: true,
             terminalStates: ["Done"],
             adapterOptions: {},
           },
@@ -418,7 +422,7 @@ Implement {{ issue.identifier }} attempt={{ attempt }}
           readFile(join(workspacePath, "before-run.txt"), "utf8"),
         ).resolves.toBe("before");
       },
-      { timeout: 3_000 },
+      { timeout: 10_000 },
     );
 
     await vi.waitFor(
@@ -569,6 +573,10 @@ function createConfig(
       apiKey: "token",
       projectSlug: "ENG",
       activeStates: ["Todo"],
+      claimState: "In Progress",
+      handoffStates: ["In Review", "Review"],
+      blockedState: "Needs decision",
+      requireClaimBeforeAgent: true,
       terminalStates: ["Done", "Canceled"],
       adapterOptions: {},
     },

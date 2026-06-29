@@ -16,7 +16,13 @@ import {
   readNotionRelationPropertyIds,
   relationPropertyHasMore,
 } from "./notion-normalize.js";
-import type { IssueStateSnapshot, IssueTracker } from "./tracker.js";
+import type {
+  IssueStateSnapshot,
+  IssueTracker,
+  TrackerHandoffMetadata,
+  TrackerLifecycleConfig,
+  TrackerLifecycleTransitionResult,
+} from "./tracker.js";
 
 export interface NotionTrackerAdapterOptions {
   dataSourceId: string | null;
@@ -152,6 +158,44 @@ export class NotionTrackerClient implements IssueTracker {
     );
   }
 
+  async claimIssue(input: {
+    issue: Issue;
+    lifecycle: TrackerLifecycleConfig;
+  }): Promise<TrackerLifecycleTransitionResult> {
+    const state = requireConfiguredLifecycleState(
+      input.lifecycle.claimState,
+      "tracker.claim_state",
+    );
+    return this.transitionIssueStatus({
+      issue: input.issue,
+      state,
+      field: "tracker.claim_state",
+    });
+  }
+
+  async handoffIssue(input: {
+    issue: Issue;
+    lifecycle: TrackerLifecycleConfig;
+    metadata: TrackerHandoffMetadata;
+  }): Promise<TrackerLifecycleTransitionResult> {
+    if (!input.metadata.readyForReview) {
+      throw new TrackerError(
+        ERROR_CODES.configInvalid,
+        "symphony_handoff requires ready_for_review=true before moving the tracker ticket.",
+      );
+    }
+
+    const state = await this.selectConfiguredLifecycleState({
+      states: input.lifecycle.handoffStates,
+      field: "tracker.handoff_states",
+    });
+    return this.transitionIssueStatus({
+      issue: input.issue,
+      state,
+      field: "tracker.handoff_states",
+    });
+  }
+
   private async fetchIssuesByStateNames(
     stateNames: string[],
   ): Promise<Issue[]> {
@@ -183,6 +227,86 @@ export class NotionTrackerClient implements IssueTracker {
         blockerLookup,
       });
     });
+  }
+
+  private async selectConfiguredLifecycleState(input: {
+    states: readonly string[];
+    field: string;
+  }): Promise<string> {
+    const candidates = input.states.filter((state) => state.trim() !== "");
+    if (candidates.length === 0) {
+      throw new TrackerError(
+        ERROR_CODES.configInvalid,
+        `${input.field} must include at least one configured state.`,
+      );
+    }
+
+    const schema = await this.getSchema();
+    const available = readStatusOptionNames(schema.properties.status);
+    const selected = candidates.find((state) => available.includes(state));
+    if (selected === undefined) {
+      throw new TrackerError(
+        ERROR_CODES.configInvalid,
+        `${input.field} did not match any Notion status option. Available options: ${formatAvailableOptions(available)}.`,
+        { details: available },
+      );
+    }
+
+    return selected;
+  }
+
+  private async transitionIssueStatus(input: {
+    issue: Issue;
+    state: string;
+    field: string;
+  }): Promise<TrackerLifecycleTransitionResult> {
+    const schema = await this.getSchema();
+    requireStatusOption(schema.properties.status, {
+      state: input.state,
+      field: input.field,
+    });
+
+    if (input.issue.state === input.state) {
+      return {
+        issue: {
+          id: input.issue.id,
+          identifier: input.issue.identifier,
+          state: input.issue.state,
+        },
+        state: input.issue.state,
+      };
+    }
+
+    const page = await this.requestJson<unknown>({
+      method: "PATCH",
+      path: `/pages/${encodeURIComponent(input.issue.id)}`,
+      body: {
+        properties: {
+          [schema.properties.status.name]: {
+            [schema.properties.status.type]: {
+              name: input.state,
+            },
+          },
+        },
+      },
+    });
+    const snapshot = normalizeNotionIssueState(page, {
+      status: schema.properties.status,
+      identifier: schema.properties.identifier,
+    });
+
+    if (snapshot.state !== input.state) {
+      throw new TrackerError(
+        ERROR_CODES.notionUnknownPayload,
+        `Notion status update returned state '${snapshot.state}' instead of '${input.state}'.`,
+        { details: snapshot },
+      );
+    }
+
+    return {
+      issue: snapshot,
+      state: snapshot.state,
+    };
   }
 
   private async getSchema(): Promise<NotionResolvedSchema> {
@@ -494,7 +618,7 @@ export class NotionTrackerClient implements IssueTracker {
   }
 
   private async requestJson<T>(input: {
-    method: "GET" | "POST";
+    method: "GET" | "POST" | "PATCH";
     path: string;
     query?: Record<string, string>;
     body?: Record<string, unknown>;
@@ -552,7 +676,7 @@ export class NotionTrackerClient implements IssueTracker {
   }
 
   private async fetchWithTimeout(input: {
-    method: "GET" | "POST";
+    method: "GET" | "POST" | "PATCH";
     path: string;
     query?: Record<string, string>;
     body?: Record<string, unknown>;
@@ -756,7 +880,82 @@ function toSchemaDescriptor(
     id: descriptor.id,
     name,
     type: descriptor.type,
+    options: readSchemaOptionNames(value, descriptor.type),
   };
+}
+
+function readSchemaOptionNames(value: unknown, type: string): string[] {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return [];
+  }
+
+  const typedValue = (value as Record<string, unknown>)[type];
+  if (
+    !typedValue ||
+    typeof typedValue !== "object" ||
+    Array.isArray(typedValue)
+  ) {
+    return [];
+  }
+
+  const options = (typedValue as { options?: unknown }).options;
+  if (!Array.isArray(options)) {
+    return [];
+  }
+
+  return options
+    .map((option) =>
+      option &&
+      typeof option === "object" &&
+      !Array.isArray(option) &&
+      typeof (option as { name?: unknown }).name === "string"
+        ? ((option as { name: string }).name ?? "").trim()
+        : "",
+    )
+    .filter((name) => name !== "");
+}
+
+function requireConfiguredLifecycleState(
+  state: string | null,
+  field: string,
+): string {
+  if (state === null || state.trim() === "") {
+    throw new TrackerError(
+      ERROR_CODES.configInvalid,
+      `${field} must be configured before tracker lifecycle write-back can run.`,
+    );
+  }
+
+  return state;
+}
+
+function requireStatusOption(
+  statusProperty: NotionPropertyDescriptor,
+  input: {
+    state: string;
+    field: string;
+  },
+): void {
+  const available = readStatusOptionNames(statusProperty);
+  if (available.includes(input.state)) {
+    return;
+  }
+
+  throw new TrackerError(
+    ERROR_CODES.configInvalid,
+    `${input.field} '${input.state}' did not match any Notion status option. Available options: ${formatAvailableOptions(available)}.`,
+    { details: available },
+  );
+}
+
+function readStatusOptionNames(
+  statusProperty: NotionPropertyDescriptor,
+): string[] {
+  return statusProperty.options ?? [];
+}
+
+function formatAvailableOptions(options: readonly string[]): string {
+  return options.length === 0 ? "(none)" : options.join(", ");
 }
 
 function getPagePropertyValue(

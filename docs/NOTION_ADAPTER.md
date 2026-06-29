@@ -7,6 +7,8 @@ This guide covers the MVP Notion tracker adapter that ships in `tracker.kind: no
 - reading candidate tickets from one Notion data source
 - fetching pages by explicit workflow states
 - reconciling current state by page ID
+- claiming eligible tasks into a configured running state before Codex starts
+- handing ready work off through the adapter-neutral `symphony_handoff` tool
 - normalizing Notion pages into Symphony `Issue` objects
 - best-effort blocker hydration through relation properties
 
@@ -58,6 +60,12 @@ Recommended active states:
 - `Todo`
 - `In Progress`
 
+Recommended lifecycle write-back states:
+
+- `claim_state`: `In Progress`
+- `handoff_states`: `In Review`, `Review`
+- `blocked_state`: `Needs decision`
+
 Recommended terminal states:
 
 - `Done`
@@ -75,6 +83,10 @@ tracker:
   api_key: $NOTION_API_KEY
   data_source_id: "your-notion-data-source-id"
   active_states: [Todo, In Progress]
+  claim_state: In Progress
+  handoff_states: [In Review, Review]
+  blocked_state: Needs decision
+  require_claim_before_agent: true
   terminal_states: [Done, Closed, Canceled, Cancelled, Duplicate]
 
   title_property: Name
@@ -105,61 +117,64 @@ codex:
 ---
 
 You are working on Notion issue {{ issue.identifier }}.
-Implement the task, run validation, and leave the ticket in the expected handoff state.
+Implement the task and run validation. When the PR is ready for review, call `symphony_handoff`
+with the PR URL, head SHA, validation summary, and residual risks.
 ```
 
-## 7. How the agent updates status and comments
+## 7. Lifecycle write-back
 
-The MVP adapter does not inject a `notion_api` dynamic tool yet. Agents should use normal workflow
-credentials instead.
+The Notion adapter owns status lifecycle writes. Agents should not make raw Notion status REST
+calls from the workflow prompt.
 
-### Status update
+### Claim
 
-Use `PATCH /v1/pages/{page_id}` and update the configured status property under `properties`.
+When Symphony dispatches a Notion task and `require_claim_before_agent` is true, it validates
+`claim_state` against the data source schema and writes that exact `status` or `select` option
+before starting the Codex app-server session. If the write or read-back fails, Codex is not
+started; Symphony surfaces `tracker_claim_failed` in logs, dashboard state, and the JSON API.
 
-Example:
+### Handoff
 
-```bash
-curl -X PATCH "https://api.notion.com/v1/pages/$PAGE_ID" \
-  -H "Authorization: Bearer $NOTION_API_KEY" \
-  -H "Notion-Version: 2026-03-11" \
-  -H "Content-Type: application/json" \
-  --data '{
-    "properties": {
-      "Status": {
-        "status": { "name": "Done" }
-      }
-    }
-  }'
+When repository-owned workflow checks say the PR is ready, call the injected tool:
+
+```json
+{
+  "ready_for_review": true,
+  "pr_url": "https://github.com/your-org/your-repo/pull/123",
+  "pr_number": "123",
+  "head_sha": "abc123",
+  "validation_summary": "pnpm test, pnpm typecheck, pnpm lint passed",
+  "risks": "No known residual risks"
+}
 ```
 
-### Comment
+Symphony selects the first configured exact match from `handoff_states`, writes it to Notion, and
+suppresses continuation after the successful tool call. It never moves tickets to `Done`, `Closed`,
+or another terminal state unless your workflow explicitly instructs the agent to do so through a
+separate mechanism.
 
-Use `POST /v1/comments` with `parent.page_id` plus either `rich_text` or `markdown`.
+If no configured handoff option exists, Symphony reports a validation error listing available
+Notion options. If the handoff status write fails, Symphony pauses automatic continuation and
+surfaces `tracker_handoff_failed` for operator action instead of burning another Codex turn.
 
-Example:
+### Comments
 
-```bash
-curl -X POST "https://api.notion.com/v1/comments" \
-  -H "Authorization: Bearer $NOTION_API_KEY" \
-  -H "Notion-Version: 2026-03-11" \
-  -H "Content-Type: application/json" \
-  --data '{
-    "parent": { "page_id": "'"$PAGE_ID"'" },
-    "markdown": "Implemented the requested change and ran validation."
-  }'
-```
+Comments are optional checkpointing. The lifecycle path does not depend on comment write access:
+if page/status writes work, status transition still succeeds even when Notion comments are
+unavailable.
 
-To make those calls available inside an agent turn:
+## 8. Operational notes
 
-1. export `NOTION_API_KEY` before starting Symphony
-2. use `codex --config shell_environment_policy.inherit=all app-server`
-3. enable network access in `codex.turn_sandbox_policy`
+- `claim_state` and `handoff_states` must exactly match Notion option names.
+- `status_property` may be either Notion `status` or `select`.
+- Vercel, deploy, or CI statuses are workflow evidence only; Symphony lifecycle readiness is driven
+  by the structured handoff tool.
+- Normal worker exit without handoff can still continue while the ticket stays active, but repeated
+  exits with unchanged evidence are held as `no_progress_or_handoff_missing`.
 
-## 8. MVP limitations
+## 9. MVP limitations
 
 - the adapter reads from exactly one Notion data source
-- there is no built-in `notion_api` dynamic tool yet
 - `branchName` is always `null`
 - priority mapping is heuristic for select/status labels
 - blocker hydration is best-effort and depends on relation access

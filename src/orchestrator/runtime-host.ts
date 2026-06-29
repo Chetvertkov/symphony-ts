@@ -383,16 +383,36 @@ export class OrchestratorRuntimeHost implements DashboardServerHost {
     this.workers.delete(execution.issueId);
 
     await this.logger?.log(
-      input.outcome === "normal" ? "info" : "error",
-      input.outcome === "normal"
-        ? "worker_exit_normal"
-        : "worker_exit_abnormal",
-      input.outcome === "normal"
-        ? "Worker completed normally."
-        : "Worker completed abnormally.",
+      execution.lastResult?.handoff?.status === "failed"
+        ? "warn"
+        : input.outcome === "normal"
+          ? "info"
+          : "error",
+      execution.lastResult?.handoff?.status === "failed"
+        ? "tracker_handoff_failed"
+        : input.outcome === "normal"
+          ? "worker_exit_normal"
+          : "worker_exit_abnormal",
+      execution.lastResult?.handoff?.status === "failed"
+        ? "Tracker handoff failed; automatic continuation is paused for operator action."
+        : input.outcome === "normal"
+          ? "Worker completed normally."
+          : "Worker completed abnormally.",
       {
-        outcome: input.outcome === "normal" ? "completed" : "failed",
+        outcome:
+          execution.lastResult?.handoff?.status === "failed"
+            ? "blocked"
+            : input.outcome === "normal"
+              ? "completed"
+              : "failed",
         ...(input.reason === undefined ? {} : { reason: input.reason }),
+        ...(execution.lastResult?.handoff?.status === "failed"
+          ? {
+              reason: "tracker_handoff_failed",
+              error_code: ERROR_CODES.trackerHandoffFailed,
+              error: execution.lastResult.handoff.error,
+            }
+          : {}),
         issue_id: execution.issueId,
         issue_identifier: execution.issueIdentifier,
         session_id: execution.lastResult?.liveSession.sessionId ?? null,
@@ -408,6 +428,11 @@ export class OrchestratorRuntimeHost implements DashboardServerHost {
       outcome: input.outcome,
       ...(input.reason === undefined ? {} : { reason: input.reason }),
       endedAt: input.endedAt ?? this.now(),
+      handoff: execution.lastResult?.handoff ?? null,
+      progressSignature:
+        execution.lastResult === null
+          ? null
+          : buildWorkerProgressSignature(execution.lastResult),
     });
   }
 
@@ -681,6 +706,15 @@ async function logPollCycleResult(
         reason: "tracker_candidate_fetch_failed",
       },
     );
+  }
+
+  for (const blocker of result.lifecycleWriteBlockers) {
+    await logger.warn("tracker_lifecycle_write_blocked", blocker.error, {
+      outcome: "blocked",
+      reason: blocker.operation,
+      issue_id: blocker.issueId,
+      issue_identifier: blocker.issueIdentifier,
+    });
   }
 }
 
@@ -993,6 +1027,24 @@ function toRetryIssueDetail(
     last_error: retry.error,
     tracked: {},
   };
+}
+
+function buildWorkerProgressSignature(result: AgentRunResult): string {
+  return JSON.stringify({
+    issueId: result.issue.id,
+    identifier: result.issue.identifier,
+    state: result.issue.state,
+    lastTurnMessage: result.lastTurn?.message ?? null,
+    handoff:
+      result.handoff?.status === "succeeded"
+        ? {
+            state: result.handoff.result.state,
+            prUrl: result.handoff.metadata.prUrl,
+            prNumber: result.handoff.metadata.prNumber,
+            headSha: result.handoff.metadata.headSha,
+          }
+        : null,
+  });
 }
 
 function installSignalHandlers(

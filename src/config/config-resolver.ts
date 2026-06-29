@@ -25,8 +25,12 @@ import {
   DEFAULT_OBSERVABILITY_RENDER_INTERVAL_MS,
   DEFAULT_POLL_INTERVAL_MS,
   DEFAULT_READ_TIMEOUT_MS,
+  DEFAULT_REQUIRE_CLAIM_BEFORE_AGENT,
   DEFAULT_STALL_TIMEOUT_MS,
   DEFAULT_TERMINAL_STATES,
+  DEFAULT_TRACKER_BLOCKED_STATE,
+  DEFAULT_TRACKER_CLAIM_STATE,
+  DEFAULT_TRACKER_HANDOFF_STATES,
   DEFAULT_TRACKER_KIND,
   DEFAULT_TURN_TIMEOUT_MS,
   DEFAULT_WORKSPACE_ROOT,
@@ -42,6 +46,10 @@ const TRACKER_COMMON_CONFIG_KEYS = new Set([
   "api_key",
   "project_slug",
   "active_states",
+  "claim_state",
+  "handoff_states",
+  "blocked_state",
+  "require_claim_before_agent",
   "terminal_states",
 ]);
 
@@ -77,6 +85,18 @@ export function resolveWorkflowConfig(
         tracker.active_states,
         DEFAULT_ACTIVE_STATES,
       ),
+      claimState:
+        readNullableString(tracker.claim_state) ?? DEFAULT_TRACKER_CLAIM_STATE,
+      handoffStates: readStringList(
+        tracker.handoff_states,
+        DEFAULT_TRACKER_HANDOFF_STATES,
+      ),
+      blockedState:
+        readNullableString(tracker.blocked_state) ??
+        DEFAULT_TRACKER_BLOCKED_STATE,
+      requireClaimBeforeAgent:
+        readBoolean(tracker.require_claim_before_agent) ??
+        DEFAULT_REQUIRE_CLAIM_BEFORE_AGENT,
       terminalStates: readStringList(
         tracker.terminal_states,
         DEFAULT_TERMINAL_STATES,
@@ -185,6 +205,16 @@ function readString(value: unknown): string | null {
   }
 
   return value;
+}
+
+function readNullableString(value: unknown): string | null {
+  const text = readString(value);
+  if (text === null) {
+    return null;
+  }
+
+  const trimmed = text.trim();
+  return trimmed.length > 0 ? trimmed : null;
 }
 
 function readScript(value: unknown): string | null {
