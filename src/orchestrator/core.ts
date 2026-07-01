@@ -13,11 +13,18 @@ import {
   createInitialOrchestratorState,
   normalizeIssueState,
 } from "../domain/model.js";
+import { ERROR_CODES } from "../errors/codes.js";
 import {
   addEndedSessionRuntime,
   applyCodexEventToOrchestratorState,
 } from "../logging/session-metrics.js";
-import type { IssueStateSnapshot, IssueTracker } from "../tracker/tracker.js";
+import {
+  type IssueStateSnapshot,
+  type IssueTracker,
+  type TrackerHandoffRunResult,
+  type TrackerLifecycleConfig,
+  supportsTrackerLifecycleWrite,
+} from "../tracker/tracker.js";
 
 const CONTINUATION_RETRY_DELAY_MS = 1_000;
 const FAILURE_RETRY_BASE_DELAY_MS = 10_000;
@@ -44,12 +51,20 @@ export interface PollTickResult {
   stopRequests: StopRequest[];
   trackerFetchFailed: boolean;
   reconciliationFetchFailed: boolean;
+  lifecycleWriteBlockers: TrackerLifecycleBlocker[];
 }
 
 export interface RetryTimerResult {
   dispatched: boolean;
   released: boolean;
   retryEntry: RetryEntry | null;
+}
+
+export interface TrackerLifecycleBlocker {
+  issueId: string;
+  issueIdentifier: string;
+  operation: "claim" | "handoff" | "no_progress";
+  error: string;
 }
 
 export interface CodexEventResult {
@@ -188,6 +203,7 @@ export class OrchestratorCore {
         stopRequests: reconcileResult.stopRequests,
         trackerFetchFailed: false,
         reconciliationFetchFailed: reconcileResult.reconciliationFetchFailed,
+        lifecycleWriteBlockers: [],
       };
     }
 
@@ -201,10 +217,12 @@ export class OrchestratorCore {
         stopRequests: reconcileResult.stopRequests,
         trackerFetchFailed: true,
         reconciliationFetchFailed: reconcileResult.reconciliationFetchFailed,
+        lifecycleWriteBlockers: [],
       };
     }
 
     const dispatchedIssueIds: string[] = [];
+    const lifecycleWriteBlockers: TrackerLifecycleBlocker[] = [];
     for (const issue of sortIssuesForDispatch(issues)) {
       if (this.availableSlots() <= 0) {
         break;
@@ -214,8 +232,11 @@ export class OrchestratorCore {
         continue;
       }
 
-      const dispatched = await this.dispatchIssue(issue, null);
-      if (dispatched) {
+      const result = await this.dispatchIssue(issue, null);
+      if (result.lifecycleWriteBlocker !== null) {
+        lifecycleWriteBlockers.push(result.lifecycleWriteBlocker);
+      }
+      if (result.dispatched) {
         dispatchedIssueIds.push(issue.id);
       }
     }
@@ -226,6 +247,7 @@ export class OrchestratorCore {
       stopRequests: reconcileResult.stopRequests,
       trackerFetchFailed: false,
       reconciliationFetchFailed: reconcileResult.reconciliationFetchFailed,
+      lifecycleWriteBlockers,
     };
   }
 
@@ -291,11 +313,14 @@ export class OrchestratorCore {
       };
     }
 
-    const dispatched = await this.dispatchIssue(issue, retryEntry.attempt);
+    const result = await this.dispatchIssue(issue, retryEntry.attempt);
     return {
-      dispatched,
+      dispatched: result.dispatched,
       released: false,
-      retryEntry: null,
+      retryEntry:
+        result.lifecycleWriteBlocker === null
+          ? null
+          : (this.state.retryAttempts[issueId] ?? null),
     };
   }
 
@@ -304,6 +329,8 @@ export class OrchestratorCore {
     outcome: WorkerExitOutcome;
     reason?: string;
     endedAt?: Date;
+    handoff?: TrackerHandoffRunResult | null;
+    progressSignature?: string | null;
   }): RetryEntry | null {
     const runningEntry = this.state.running[input.issueId];
     if (runningEntry === undefined) {
@@ -318,6 +345,32 @@ export class OrchestratorCore {
     );
 
     if (input.outcome === "normal") {
+      if (input.handoff?.status === "succeeded") {
+        this.state.completed.add(input.issueId);
+        this.releaseClaim(input.issueId);
+        delete this.state.progressSignatures[input.issueId];
+        return null;
+      }
+
+      if (input.handoff?.status === "failed") {
+        return this.holdForOperatorAction(input.issueId, {
+          attempt: nextRetryAttempt(runningEntry.retryAttempt),
+          identifier: runningEntry.identifier,
+          error: `${ERROR_CODES.trackerHandoffFailed}: ${input.handoff.error}`,
+        });
+      }
+
+      const signature =
+        input.progressSignature ?? buildNoProgressSignature(runningEntry);
+      if (this.state.progressSignatures[input.issueId] === signature) {
+        return this.holdForOperatorAction(input.issueId, {
+          attempt: nextRetryAttempt(runningEntry.retryAttempt),
+          identifier: runningEntry.identifier,
+          error: `${ERROR_CODES.trackerNoProgressOrHandoffMissing}: worker exited normally without structured handoff and without new tracker or PR evidence`,
+        });
+      }
+
+      this.state.progressSignatures[input.issueId] = signature;
       this.state.completed.add(input.issueId);
       return this.scheduleRetry(input.issueId, 1, {
         identifier: runningEntry.identifier,
@@ -410,29 +463,94 @@ export class OrchestratorCore {
   private async dispatchIssue(
     issue: Issue,
     attempt: number | null,
-  ): Promise<boolean> {
+  ): Promise<{
+    dispatched: boolean;
+    lifecycleWriteBlocker: TrackerLifecycleBlocker | null;
+  }> {
+    let issueForDispatch = issue;
     try {
-      const spawned = await this.spawnWorker({ issue, attempt });
-      this.state.running[issue.id] = {
-        ...createEmptyLiveSession(),
-        issue,
+      issueForDispatch = await this.claimIssueBeforeDispatch(issue);
+    } catch (error) {
+      const message = `${ERROR_CODES.trackerClaimFailed}: ${toErrorMessage(error)}`;
+      this.scheduleRetry(issue.id, nextRetryAttempt(attempt), {
         identifier: issue.identifier,
+        error: message,
+        delayType: "failure",
+      });
+      return {
+        dispatched: false,
+        lifecycleWriteBlocker: {
+          issueId: issue.id,
+          issueIdentifier: issue.identifier,
+          operation: "claim",
+          error: message,
+        },
+      };
+    }
+
+    try {
+      const spawned = await this.spawnWorker({
+        issue: issueForDispatch,
+        attempt,
+      });
+      this.state.running[issueForDispatch.id] = {
+        ...createEmptyLiveSession(),
+        issue: issueForDispatch,
+        identifier: issueForDispatch.identifier,
         retryAttempt: normalizeRetryAttempt(attempt),
         startedAt: this.now().toISOString(),
         workerHandle: spawned.workerHandle,
         monitorHandle: spawned.monitorHandle,
       };
-      this.state.claimed.add(issue.id);
-      this.clearRetryEntry(issue.id);
-      return true;
+      this.state.claimed.add(issueForDispatch.id);
+      this.clearRetryEntry(issueForDispatch.id);
+      return {
+        dispatched: true,
+        lifecycleWriteBlocker: null,
+      };
     } catch {
-      this.scheduleRetry(issue.id, nextRetryAttempt(attempt), {
-        identifier: issue.identifier,
+      this.scheduleRetry(issueForDispatch.id, nextRetryAttempt(attempt), {
+        identifier: issueForDispatch.identifier,
         error: "failed to spawn agent",
         delayType: "failure",
       });
-      return false;
+      return {
+        dispatched: false,
+        lifecycleWriteBlocker: null,
+      };
     }
+  }
+
+  private async claimIssueBeforeDispatch(issue: Issue): Promise<Issue> {
+    if (
+      !this.config.tracker.requireClaimBeforeAgent ||
+      !supportsTrackerLifecycleWrite(this.tracker)
+    ) {
+      return issue;
+    }
+
+    const result = await this.tracker.claimIssue({
+      issue,
+      lifecycle: this.lifecycleConfig(),
+    });
+
+    return {
+      ...issue,
+      identifier:
+        result.issue.identifier.trim().length > 0
+          ? result.issue.identifier
+          : issue.identifier,
+      state: result.issue.state,
+    };
+  }
+
+  private lifecycleConfig(): TrackerLifecycleConfig {
+    return {
+      claimState: this.config.tracker.claimState,
+      handoffStates: this.config.tracker.handoffStates,
+      blockedState: this.config.tracker.blockedState,
+      requireClaimBeforeAgent: this.config.tracker.requireClaimBeforeAgent,
+    };
   }
 
   private async reconcileRunningIssues(): Promise<{
@@ -599,6 +717,30 @@ export class OrchestratorCore {
     return retryEntry;
   }
 
+  private holdForOperatorAction(
+    issueId: string,
+    input: {
+      attempt: number;
+      identifier: string | null;
+      error: string;
+    },
+  ): RetryEntry {
+    this.clearRetryEntry(issueId);
+
+    const retryEntry: RetryEntry = {
+      issueId,
+      identifier: input.identifier,
+      attempt: input.attempt,
+      dueAtMs: this.now().getTime(),
+      timerHandle: null,
+      error: input.error,
+    };
+
+    this.state.claimed.add(issueId);
+    this.state.retryAttempts[issueId] = retryEntry;
+    return retryEntry;
+  }
+
   private clearRetryEntry(issueId: string): void {
     const current = this.state.retryAttempts[issueId];
     if (current !== undefined) {
@@ -610,6 +752,7 @@ export class OrchestratorCore {
   private releaseClaim(issueId: string): void {
     this.clearRetryEntry(issueId);
     this.state.claimed.delete(issueId);
+    delete this.state.progressSignatures[issueId];
   }
 }
 
@@ -654,6 +797,24 @@ function formatWorkerExitReason(reason: string | undefined): string {
   return normalized && normalized.length > 0
     ? `worker exited: ${normalized}`
     : "worker exited: abnormal";
+}
+
+function buildNoProgressSignature(runningEntry: RunningEntry): string {
+  return JSON.stringify({
+    issueId: runningEntry.issue.id,
+    identifier: runningEntry.identifier,
+    state: runningEntry.issue.state,
+    threadId: runningEntry.threadId,
+    lastMessage: runningEntry.lastCodexMessage,
+  });
+}
+
+function toErrorMessage(error: unknown): string {
+  if (error instanceof Error && error.message.trim().length > 0) {
+    return error.message;
+  }
+
+  return "tracker lifecycle write failed";
 }
 
 function toSortablePriority(priority: number | null): number {

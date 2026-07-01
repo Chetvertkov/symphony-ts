@@ -37,7 +37,8 @@ Covered behaviors include active-state candidate fetch, `slugId` project
 filtering, data-source query filtering, empty-state short-circuiting,
 pagination, blockers and label normalization, state refresh by GraphQL ID list
 and Notion page ID, typed request/payload error mapping, and adapter registry
-selection across Linear and Notion.
+selection across Linear and Notion. Notion lifecycle write-back tests cover
+`status` and `select` status updates plus missing configured option errors.
 
 ## 17.4 Orchestrator Dispatch, Reconciliation, and Retry
 
@@ -48,8 +49,9 @@ selection across Linear and Notion.
 
 Covered behaviors include dispatch ordering, blocker eligibility, state
 reconciliation, stop and cleanup rules, continuation and failure retry
-behavior, backoff capping, stall handling, slot exhaustion, and runtime
-snapshot contents.
+behavior, lifecycle claim blocking before worker spawn, structured handoff
+continuation suppression, no-progress holds, backoff capping, stall handling,
+slot exhaustion, and runtime snapshot contents.
 
 ## 17.5 Coding-Agent App-Server Client
 
@@ -60,7 +62,8 @@ snapshot contents.
 Covered behaviors include `bash -lc` launch semantics, startup handshake,
 policy payloads, read and turn timeouts, stdout buffering, stderr handling,
 approval and user-input flows, usage and rate-limit extraction, unsupported
-tool handling, and the optional `linear_graphql` dynamic tool extension.
+tool handling, structured `symphony_handoff`, and the optional
+`linear_graphql` dynamic tool extension.
 
 ## 17.6 Observability
 

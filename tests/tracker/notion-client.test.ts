@@ -407,6 +407,138 @@ describe("NotionTrackerClient", () => {
     ]);
   });
 
+  it("claims a Notion status property by patching the configured state option", async () => {
+    const fetchFn = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(jsonResponse(dataSourceSchema()))
+      .mockResolvedValueOnce(
+        jsonResponse(
+          notionPage({
+            id: "page-1",
+            key: "NOTION-1",
+            state: "In Progress",
+          }),
+        ),
+      );
+    const client = createClient({ fetchFn });
+
+    await expect(
+      client.claimIssue({
+        issue: createIssue({ id: "page-1", state: "Todo" }),
+        lifecycle: {
+          ...createLifecycle(),
+          handoffStates: ["Review", "In Review"],
+        },
+      }),
+    ).resolves.toEqual({
+      issue: {
+        id: "page-1",
+        identifier: "NOTION-1",
+        state: "In Progress",
+      },
+      state: "In Progress",
+    });
+
+    expect(fetchFn).toHaveBeenCalledTimes(2);
+    const patchCall = fetchFn.mock.calls[1];
+    expect(patchCall?.[0]).toBe("https://api.notion.com/v1/pages/page-1");
+    expect(patchCall?.[1]?.method).toBe("PATCH");
+    expect(parseRequestBody(patchCall?.[1])).toEqual({
+      properties: {
+        Status: {
+          status: {
+            name: "In Progress",
+          },
+        },
+      },
+    });
+  });
+
+  it("updates select-backed status properties with the select payload shape", async () => {
+    const fetchFn = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(
+        jsonResponse(dataSourceSchema({ statusType: "select" })),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse(
+          notionPage({
+            id: "page-1",
+            key: "NOTION-1",
+            state: "Review",
+            statusType: "select",
+          }),
+        ),
+      );
+    const client = createClient({ fetchFn });
+
+    await expect(
+      client.handoffIssue({
+        issue: createIssue({ id: "page-1", state: "In Progress" }),
+        lifecycle: {
+          ...createLifecycle(),
+          handoffStates: ["Review", "In Review"],
+        },
+        metadata: {
+          readyForReview: true,
+          prUrl: "https://github.com/acme/repo/pull/12",
+          prNumber: "12",
+          headSha: "abc123",
+          validationSummary: "pnpm test passed",
+          risks: null,
+        },
+      }),
+    ).resolves.toMatchObject({
+      issue: {
+        id: "page-1",
+        identifier: "NOTION-1",
+        state: "Review",
+      },
+      state: "Review",
+    });
+
+    expect(parseRequestBody(fetchFn.mock.calls[1]?.[1])).toEqual({
+      properties: {
+        Status: {
+          select: {
+            name: "Review",
+          },
+        },
+      },
+    });
+  });
+
+  it("rejects missing configured lifecycle options with the available Notion options", async () => {
+    const fetchFn = vi.fn<typeof fetch>().mockResolvedValueOnce(
+      jsonResponse(
+        dataSourceSchema({
+          statusOptions: ["Todo", "In Progress"],
+        }),
+      ),
+    );
+    const client = createClient({ fetchFn });
+
+    await expect(
+      client.handoffIssue({
+        issue: createIssue({ id: "page-1", state: "In Progress" }),
+        lifecycle: {
+          ...createLifecycle(),
+          handoffStates: ["In Review", "Review"],
+        },
+        metadata: {
+          readyForReview: true,
+          prUrl: null,
+          prNumber: null,
+          headSha: null,
+          validationSummary: null,
+          risks: null,
+        },
+      }),
+    ).rejects.toThrow(
+      "tracker.handoff_states did not match any Notion status option. Available options: Todo, In Progress.",
+    );
+  });
+
   it("retries schema loading after a transient schema fetch failure", async () => {
     const fetchFn = vi
       .fn<typeof fetch>()
@@ -555,7 +687,21 @@ function createClient(
   });
 }
 
-function dataSourceSchema(overrides: { blockedById?: string } = {}): unknown {
+function dataSourceSchema(
+  overrides: {
+    blockedById?: string;
+    statusType?: "status" | "select";
+    statusOptions?: string[];
+  } = {},
+): unknown {
+  const statusType = overrides.statusType ?? "status";
+  const statusOptions = overrides.statusOptions ?? [
+    "Todo",
+    "In Progress",
+    "In Review",
+    "Review",
+    "Done",
+  ];
   return {
     object: "data_source",
     id: "data-source-1",
@@ -566,7 +712,10 @@ function dataSourceSchema(overrides: { blockedById?: string } = {}): unknown {
       },
       Status: {
         id: "status-id",
-        type: "status",
+        type: statusType,
+        [statusType]: {
+          options: statusOptions.map((name) => ({ name })),
+        },
       },
       Key: {
         id: "key-id",
@@ -597,12 +746,14 @@ function notionPage(input: {
   key?: string;
   title?: string;
   state: string;
+  statusType?: "status" | "select";
   blockedBy?: {
     relation: Array<{ id: string }>;
     has_more: boolean;
   };
   createdTime?: string;
 }): unknown {
+  const statusType = input.statusType ?? "status";
   return {
     object: "page",
     id: input.id,
@@ -617,8 +768,8 @@ function notionPage(input: {
       },
       Status: {
         id: "status-id",
-        type: "status",
-        status: {
+        type: statusType,
+        [statusType]: {
           name: input.state,
         },
       },
@@ -656,6 +807,35 @@ function notionPage(input: {
         has_more: input.blockedBy?.has_more ?? false,
       },
     },
+  };
+}
+
+function createIssue(
+  overrides: Partial<import("../../src/domain/model.js").Issue> = {},
+) {
+  return {
+    id: "page-1",
+    identifier: "NOTION-1",
+    title: "Task",
+    description: null,
+    priority: null,
+    state: "Todo",
+    branchName: null,
+    url: null,
+    labels: [],
+    blockedBy: [],
+    createdAt: null,
+    updatedAt: null,
+    ...overrides,
+  };
+}
+
+function createLifecycle() {
+  return {
+    claimState: "In Progress",
+    handoffStates: ["In Review", "Review"],
+    blockedState: "Needs decision",
+    requireClaimBeforeAgent: true,
   };
 }
 

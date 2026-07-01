@@ -25,6 +25,10 @@ added without changing orchestration, workspace, dashboard, or prompt behavior.
 See [docs/TRACKER_ADAPTERS.md](docs/TRACKER_ADAPTERS.md) for the adapter contract, recommended
 ticket fields, and status lifecycle.
 
+Write-capable adapters can also own lifecycle transitions. The bundled Notion adapter claims
+`Todo` work into `In Progress` before Codex starts and exposes a `symphony_handoff` tool so an
+agent can move ready PRs to the configured review state without raw tracker API calls.
+
 ## Running Symphony Locally
 
 ### Requirements
@@ -116,6 +120,10 @@ tracker:
   kind: linear
   api_key: $LINEAR_API_KEY
   project_slug: your-linear-project-slug
+  claim_state: In Progress
+  handoff_states: [In Review, Review]
+  blocked_state: Needs decision
+  require_claim_before_agent: true
 workspace:
   root: ~/code/symphony-workspaces
 hooks:
@@ -129,7 +137,7 @@ server:
 ---
 
 You are working on Linear issue {{ issue.identifier }}.
-Implement the task, validate the result, and stop at the required handoff state.
+Implement the task, validate the result, and use the configured handoff mechanism when ready.
 ```
 
 This is the only example `WORKFLOW.md` you need to get started. Copy it into your repository root

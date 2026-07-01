@@ -135,6 +135,12 @@ tracker:
   active_states:
     - "Todo"
     - "In Progress"
+  claim_state: "In Progress"
+  handoff_states:
+    - "In Review"
+    - "Review"
+  blocked_state: "Needs decision"
+  require_claim_before_agent: true
   terminal_states:
     - "Closed"
     - "Cancelled"
@@ -172,8 +178,9 @@ State: {{ issue.state }}
 Description: {{ issue.description | default: "No description provided." }}
 {% if attempt %}Retry attempt: {{ attempt }}{% endif %}
 
-Work on this issue. When done, use the linear_graphql tool to transition the
-issue to "In Review" and leave a comment summarizing what you did.
+Work on this issue. When done, use the configured handoff mechanism. For Linear,
+use the linear_graphql tool. For write-capable adapters such as Notion, call
+the symphony_handoff tool with PR evidence and validation results.
 ```
 
 **WORKFLOW.md field reference**:
@@ -183,11 +190,15 @@ issue to "In Review" and leave a comment summarizing what you did.
 
 | Field | Description | Default |
 |-------|-------------|---------|
-| `tracker.kind` | Tracker backend. Only `linear` is supported | `linear` |
-| `tracker.endpoint` | GraphQL endpoint for the Linear API | `https://api.linear.app/graphql` |
-| `tracker.api_key` | Linear API key; use `$ENV_VAR` to reference env | Reads `LINEAR_API_KEY` env var |
-| `tracker.project_slug` | Linear project slug — required | None |
+| `tracker.kind` | Tracker backend. Bundled: `linear`, `notion` | `linear` |
+| `tracker.endpoint` | Tracker API endpoint | Linear or Notion default |
+| `tracker.api_key` | Tracker API key; use `$ENV_VAR` to reference env | Reads adapter canonical env var |
+| `tracker.project_slug` | Linear project slug — required for Linear | None |
 | `tracker.active_states` | Issue states that trigger dispatch | `[Todo, In Progress]` |
+| `tracker.claim_state` | State written before Codex starts when lifecycle writes are supported | `In Progress` |
+| `tracker.handoff_states` | Exact handoff states, in preference order | `[In Review, Review]` |
+| `tracker.blocked_state` | Operator-action state name for workflows that use one | `Needs decision` |
+| `tracker.require_claim_before_agent` | Failed claim blocks Codex startup for write-capable adapters | `true` |
 | `tracker.terminal_states` | States that trigger workspace cleanup | `[Closed, Cancelled, Canceled, Duplicate, Done]` |
 | `polling.interval_ms` | Poll interval in milliseconds | `30000` |
 | `workspace.root` | Root directory for all workspaces | `<os.tmpdir()>/symphony_workspaces` |
