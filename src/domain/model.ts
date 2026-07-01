@@ -11,6 +11,7 @@ export type OrchestratorIssueStatus =
 
 export const RUN_ATTEMPT_PHASES = [
   "preparing_workspace",
+  "blocking_issue",
   "building_prompt",
   "launching_agent_process",
   "initializing_session",

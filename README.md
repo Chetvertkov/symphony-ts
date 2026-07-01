@@ -137,7 +137,9 @@ server:
 ---
 
 You are working on Linear issue {{ issue.identifier }}.
-Implement the task, validate the result, and use the configured handoff mechanism when ready.
+If the task is missing implementation-ready requirements, ask concrete blocker questions through
+the configured blocker mechanism. Otherwise implement the task, validate the result, and use the
+configured handoff mechanism when ready.
 ```
 
 This is the only example `WORKFLOW.md` you need to get started. Copy it into your repository root
@@ -147,6 +149,10 @@ as `WORKFLOW.md`, then change these fields before starting Symphony:
 - `workspace.root`
 - `hooks.after_create`
 - `codex.command`
+
+For Notion workflows, Symphony also guards against empty tickets before Codex starts: when a task
+has no usable description and `blocked_state` is configured, it posts default clarification
+questions and moves the task to the blocked state without launching a Codex turn.
 
 If you want the dashboard, keep `server.port` in the workflow or pass `--port` on the CLI.
 The web dashboard now opens with a server-rendered snapshot and continues updating live in the
@@ -161,11 +167,14 @@ codex:
 ```
 
 If your agent must push branches, open PRs, or call external APIs during a turn, also configure a
-turn sandbox policy that explicitly allows network access instead of relying on a minimal
-`workspaceWrite` sandbox object.
+turn sandbox policy that explicitly allows network access and writable roots for the active
+workspace. Symphony expands `{{ workspace.path }}` and `{{ workspace.git_dir }}` placeholders before
+starting Codex and ensures both roots are writable for `workspaceWrite` turns, which lets agents
+create branches, commits, pushes, and PRs.
 
-If a specific external CLI still does not see the credentials it needs in your environment, provide
-that tool's credential via environment variables before launching Symphony.
+If a specific external CLI still does not see the credentials or executable paths it needs in your
+environment, provide that tool's credential via environment variables before launching Symphony and
+consider prefixing `codex.command` with an explicit `PATH=...`.
 
 For a complete reference covering every supported field with defaults and inline documentation, see
 [docs/WORKFLOW.template.md](docs/WORKFLOW.template.md).

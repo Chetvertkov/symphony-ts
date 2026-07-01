@@ -19,6 +19,7 @@ import {
 import type {
   IssueStateSnapshot,
   IssueTracker,
+  TrackerBlockerMetadata,
   TrackerHandoffMetadata,
   TrackerLifecycleConfig,
   TrackerLifecycleTransitionResult,
@@ -193,6 +194,32 @@ export class NotionTrackerClient implements IssueTracker {
       issue: input.issue,
       state,
       field: "tracker.handoff_states",
+    });
+  }
+
+  async blockIssue(input: {
+    issue: Issue;
+    lifecycle: TrackerLifecycleConfig;
+    metadata: TrackerBlockerMetadata;
+  }): Promise<TrackerLifecycleTransitionResult> {
+    const state = requireConfiguredLifecycleState(
+      input.lifecycle.blockedState,
+      "tracker.blocked_state",
+    );
+    const schema = await this.getSchema();
+    requireStatusOption(schema.properties.status, {
+      state,
+      field: "tracker.blocked_state",
+    });
+
+    await this.createBlockerComment({
+      issue: input.issue,
+      metadata: input.metadata,
+    });
+    return this.transitionIssueStatus({
+      issue: input.issue,
+      state,
+      field: "tracker.blocked_state",
     });
   }
 
@@ -617,6 +644,55 @@ export class NotionTrackerClient implements IssueTracker {
     });
   }
 
+  private async createBlockerComment(input: {
+    issue: Issue;
+    metadata: TrackerBlockerMetadata;
+  }): Promise<void> {
+    const content = formatBlockerComment(input.metadata);
+    try {
+      await this.requestJson<unknown>({
+        method: "POST",
+        path: "/comments",
+        body: {
+          parent: {
+            page_id: input.issue.id,
+          },
+          rich_text: buildRichText(content),
+        },
+      });
+    } catch (error) {
+      if (!isNotionInsufficientPermissionsError(error)) {
+        throw error;
+      }
+
+      await this.appendBlockerPageContent({
+        issue: input.issue,
+        content,
+      });
+    }
+  }
+
+  private async appendBlockerPageContent(input: {
+    issue: Issue;
+    content: string;
+  }): Promise<void> {
+    await this.requestJson<unknown>({
+      method: "PATCH",
+      path: `/blocks/${encodeURIComponent(input.issue.id)}/children`,
+      body: {
+        children: [
+          {
+            object: "block",
+            type: "paragraph",
+            paragraph: {
+              rich_text: buildRichText(input.content),
+            },
+          },
+        ],
+      },
+    });
+  }
+
   private async requestJson<T>(input: {
     method: "GET" | "POST" | "PATCH";
     path: string;
@@ -958,6 +1034,47 @@ function formatAvailableOptions(options: readonly string[]): string {
   return options.length === 0 ? "(none)" : options.join(", ");
 }
 
+function formatBlockerComment(metadata: TrackerBlockerMetadata): string {
+  const title = metadata.title ?? "Blocked: clarification needed";
+  const lines = [title, ""];
+
+  if (metadata.details !== null) {
+    lines.push(metadata.details, "");
+  }
+
+  lines.push(
+    ...metadata.questions.map((question, index) => `${index + 1}. ${question}`),
+  );
+
+  return lines.join("\n");
+}
+
+function buildRichText(content: string): Array<{
+  type: "text";
+  text: { content: string };
+}> {
+  const chunks = chunkText(content, 1800);
+  return chunks.map((chunk) => ({
+    type: "text",
+    text: {
+      content: chunk,
+    },
+  }));
+}
+
+function chunkText(content: string, size: number): string[] {
+  if (content.length <= size) {
+    return [content];
+  }
+
+  const chunks: string[] = [];
+  for (let index = 0; index < content.length; index += size) {
+    chunks.push(content.slice(index, index + size));
+  }
+
+  return chunks;
+}
+
 function getPagePropertyValue(
   page: unknown,
   descriptor: NotionPropertyDescriptor,
@@ -1052,6 +1169,14 @@ function isNotionMissingPageError(error: unknown): boolean {
 
   return (
     errorCode === "object_not_found" || errorCode === "restricted_resource"
+  );
+}
+
+function isNotionInsufficientPermissionsError(error: unknown): boolean {
+  return (
+    error instanceof TrackerError &&
+    error.code === ERROR_CODES.notionApiStatus &&
+    error.status === 403
   );
 }
 

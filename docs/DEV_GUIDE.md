@@ -269,18 +269,22 @@ codex:
   turn_sandbox_policy:
     type: workspaceWrite
     writableRoots:
-      - /tmp/symphony_workspaces
-    readOnlyAccess:
-      type: fullAccess
+      - "{{ workspace.path }}"
+      - "{{ workspace.git_dir }}"
     networkAccess: true
     excludeTmpdirEnvVar: false
     excludeSlashTmp: false
 ```
 
+Symphony expands `{{ workspace.path }}` and `{{ workspace.git_dir }}` before starting Codex. For
+`workspaceWrite` policies it also ensures the active workspace and its `.git` metadata directory are
+present in `writableRoots`, so agents can create branches, commits, pushes, and PRs when the rest of
+the workflow allows those operations.
+
 With that in place, env-based credentials exported before launching Symphony are available to turn
-commands. If a specific external CLI still does not find usable credentials in your environment,
-provide that tool's credential explicitly via an env var such as `GH_TOKEN`, `GITHUB_TOKEN`, or a
-provider-specific API key.
+commands. If a specific external CLI still does not find usable credentials or executable paths in
+your environment, provide that tool's credential via an env var such as `GH_TOKEN`, `GITHUB_TOKEN`,
+or a provider-specific API key and launch `codex.command` with an explicit `PATH=...` prefix.
 
 The exact accepted sandbox and approval values depend on the installed Codex app-server version. To
 inspect the local schema, run `codex app-server generate-json-schema --out <dir>` and inspect the

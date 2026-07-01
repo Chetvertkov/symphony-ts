@@ -22,6 +22,12 @@ export interface TrackerHandoffMetadata {
   risks: string | null;
 }
 
+export interface TrackerBlockerMetadata {
+  title: string | null;
+  questions: string[];
+  details: string | null;
+}
+
 export interface TrackerLifecycleTransitionResult {
   issue: IssueStateSnapshot;
   state: string;
@@ -39,6 +45,18 @@ export type TrackerHandoffRunResult =
       metadata: TrackerHandoffMetadata;
     };
 
+export type TrackerBlockerRunResult =
+  | {
+      status: "succeeded";
+      result: TrackerLifecycleTransitionResult;
+      metadata: TrackerBlockerMetadata;
+    }
+  | {
+      status: "failed";
+      error: string;
+      metadata: TrackerBlockerMetadata;
+    };
+
 export interface IssueTracker {
   fetchCandidateIssues(): Promise<Issue[]>;
   fetchIssuesByStates(stateNames: string[]): Promise<Issue[]>;
@@ -52,10 +70,18 @@ export interface IssueTracker {
     lifecycle: TrackerLifecycleConfig;
     metadata: TrackerHandoffMetadata;
   }): Promise<TrackerLifecycleTransitionResult>;
+  blockIssue?(input: {
+    issue: Issue;
+    lifecycle: TrackerLifecycleConfig;
+    metadata: TrackerBlockerMetadata;
+  }): Promise<TrackerLifecycleTransitionResult>;
 }
 
 export type WriteCapableIssueTracker = IssueTracker &
   Required<Pick<IssueTracker, "claimIssue" | "handoffIssue">>;
+
+export type BlockCapableIssueTracker = IssueTracker &
+  Required<Pick<IssueTracker, "blockIssue">>;
 
 export function supportsTrackerLifecycleWrite(
   tracker: IssueTracker,
@@ -64,4 +90,10 @@ export function supportsTrackerLifecycleWrite(
     typeof tracker.claimIssue === "function" &&
     typeof tracker.handoffIssue === "function"
   );
+}
+
+export function supportsTrackerBlockWrite(
+  tracker: IssueTracker,
+): tracker is BlockCapableIssueTracker {
+  return typeof tracker.blockIssue === "function";
 }

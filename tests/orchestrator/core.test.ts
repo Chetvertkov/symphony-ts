@@ -305,6 +305,63 @@ describe("orchestrator core", () => {
     expect(timers.scheduled).toEqual([]);
   });
 
+  it("suppresses continuation after successful structured blocker write-back", async () => {
+    const timers = createFakeTimerScheduler();
+    const orchestrator = createOrchestrator({ timerScheduler: timers });
+
+    await orchestrator.pollTick();
+    const retryEntry = orchestrator.onWorkerExit({
+      issueId: "1",
+      outcome: "normal",
+      blocker: {
+        status: "succeeded",
+        metadata: {
+          title: "Blocked: task needs implementation context",
+          details: "Missing acceptance criteria.",
+          questions: ["What should change?"],
+        },
+        result: {
+          issue: { id: "1", identifier: "ISSUE-1", state: "Blocked" },
+          state: "Blocked",
+        },
+      },
+    });
+
+    expect(retryEntry).toBeNull();
+    expect(orchestrator.getState().retryAttempts).toEqual({});
+    expect([...orchestrator.getState().claimed]).toEqual([]);
+    expect(timers.scheduled).toEqual([]);
+  });
+
+  it("holds for operator action without scheduling continuation when blocker write-back fails", async () => {
+    const timers = createFakeTimerScheduler();
+    const orchestrator = createOrchestrator({ timerScheduler: timers });
+
+    await orchestrator.pollTick();
+    const retryEntry = orchestrator.onWorkerExit({
+      issueId: "1",
+      outcome: "normal",
+      blocker: {
+        status: "failed",
+        error: "Notion comment write failed",
+        metadata: {
+          title: "Blocked",
+          details: null,
+          questions: ["What should change?"],
+        },
+      },
+    });
+
+    expect(retryEntry).toMatchObject({
+      issueId: "1",
+      identifier: "ISSUE-1",
+      attempt: 1,
+      error: "tracker_block_failed: Notion comment write failed",
+      timerHandle: null,
+    });
+    expect(timers.scheduled).toEqual([]);
+  });
+
   it("holds for operator action when repeated normal exits make no progress and omit handoff", async () => {
     const timers = createFakeTimerScheduler();
     const orchestrator = createOrchestrator({ timerScheduler: timers });

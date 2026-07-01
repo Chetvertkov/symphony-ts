@@ -154,12 +154,13 @@ codex:
   #   turn_sandbox_policy:
   #     type: workspaceWrite
   #     writableRoots:
-  #       - /tmp/symphony_workspaces
-  #     readOnlyAccess:
-  #       type: fullAccess
+  #       - "{{ workspace.path }}"
+  #       - "{{ workspace.git_dir }}"
   #     networkAccess: true
   #     excludeTmpdirEnvVar: false
   #     excludeSlashTmp: false
+  # Symphony expands the workspace placeholders and ensures the active workspace
+  # plus its .git metadata directory are writable for workspaceWrite turns.
   # Default: (not set)
   turn_sandbox_policy: null
 

@@ -9,6 +9,8 @@ This guide covers the MVP Notion tracker adapter that ships in `tracker.kind: no
 - reconciling current state by page ID
 - claiming eligible tasks into a configured running state before Codex starts
 - handing ready work off through the adapter-neutral `symphony_handoff` tool
+- posting clarification questions and moving non-actionable tasks through the adapter-neutral
+  `symphony_block` tool
 - normalizing Notion pages into Symphony `Issue` objects
 - best-effort blocker hydration through relation properties
 
@@ -110,9 +112,8 @@ codex:
   turn_sandbox_policy:
     type: workspaceWrite
     writableRoots:
-      - ~/symphony-workspaces/your-repo
-    readOnlyAccess:
-      type: fullAccess
+      - "{{ workspace.path }}"
+      - "{{ workspace.git_dir }}"
     networkAccess: true
 ---
 
@@ -157,11 +158,40 @@ If no configured handoff option exists, Symphony reports a validation error list
 Notion options. If the handoff status write fails, Symphony pauses automatic continuation and
 surfaces `tracker_handoff_failed` for operator action instead of burning another Codex turn.
 
+### Blocker questions
+
+When the task is not implementation-ready, call the injected tool:
+
+```json
+{
+  "title": "Blocked: clarification needed",
+  "details": "The task is missing concrete acceptance criteria.",
+  "questions": [
+    "Which user flow should this change affect?",
+    "What observable validation proves this is done?"
+  ]
+}
+```
+
+Symphony writes a Notion page comment first, then moves the task to the configured
+`blocked_state`. If Notion rejects the comments endpoint with HTTP 403, Symphony falls back to
+appending the blocker questions to the page body before changing status. If both question write
+paths fail, or if the status write fails, Symphony suppresses further automatic progress and
+surfaces the exact failure for operator action. This keeps raw tasks from burning repeated Codex
+turns without a retrievable question trail in Notion.
+
+Symphony also performs a preflight blocker check before launching Codex: if the Notion page has no
+usable `description_property` value and `blocked_state` is configured, Symphony writes default
+clarification questions and moves the task to `blocked_state` immediately. Tickets with a usable
+description still run through the normal Codex agent path, where the agent can call
+`symphony_block` for subtler ambiguities.
+
 ### Comments
 
-Comments are optional checkpointing. The lifecycle path does not depend on comment write access:
-if page/status writes work, status transition still succeeds even when Notion comments are
-unavailable.
+Comments are optional checkpointing for ordinary progress, but `symphony_block` must leave
+retrievable questions in the ticket before moving status. Enable Notion comment insert capability
+for the integration token used by `NOTION_API_KEY` when available; otherwise the adapter falls back
+to appending the questions to the page body.
 
 ## 8. Operational notes
 

@@ -508,6 +508,178 @@ describe("NotionTrackerClient", () => {
     });
   });
 
+  it("posts blocker questions before moving the page to the configured blocked state", async () => {
+    const fetchFn = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(
+        jsonResponse(
+          dataSourceSchema({
+            statusOptions: ["Todo", "In Progress", "Blocked"],
+          }),
+        ),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse({ object: "comment", id: "comment-1" }),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse(
+          notionPage({
+            id: "page-1",
+            key: "NOTION-1",
+            state: "Blocked",
+          }),
+        ),
+      );
+    const client = createClient({ fetchFn });
+
+    await expect(
+      client.blockIssue({
+        issue: createIssue({ id: "page-1", state: "In Progress" }),
+        lifecycle: {
+          ...createLifecycle(),
+          blockedState: "Blocked",
+        },
+        metadata: {
+          title: null,
+          details: "The task is missing acceptance criteria.",
+          questions: [
+            "Which user flow should this change affect?",
+            "What observable acceptance check proves this is done?",
+          ],
+        },
+      }),
+    ).resolves.toEqual({
+      issue: {
+        id: "page-1",
+        identifier: "NOTION-1",
+        state: "Blocked",
+      },
+      state: "Blocked",
+    });
+
+    expect(fetchFn).toHaveBeenCalledTimes(3);
+    expect(fetchFn.mock.calls[1]?.[0]).toBe(
+      "https://api.notion.com/v1/comments",
+    );
+    expect(fetchFn.mock.calls[1]?.[1]?.method).toBe("POST");
+    expect(parseRequestBody(fetchFn.mock.calls[1]?.[1])).toEqual({
+      parent: {
+        page_id: "page-1",
+      },
+      rich_text: [
+        {
+          type: "text",
+          text: {
+            content:
+              "Blocked: clarification needed\n\nThe task is missing acceptance criteria.\n\n1. Which user flow should this change affect?\n2. What observable acceptance check proves this is done?",
+          },
+        },
+      ],
+    });
+    expect(parseRequestBody(fetchFn.mock.calls[2]?.[1])).toEqual({
+      properties: {
+        Status: {
+          status: {
+            name: "Blocked",
+          },
+        },
+      },
+    });
+  });
+
+  it("falls back to appending blocker questions to the page when Notion comments are forbidden", async () => {
+    const fetchFn = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(
+        jsonResponse(
+          dataSourceSchema({
+            statusOptions: ["Todo", "In Progress", "Blocked"],
+          }),
+        ),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse(
+          {
+            code: "restricted_resource",
+            message: "Insufficient permissions for this endpoint.",
+          },
+          403,
+        ),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse({ object: "list", results: [], has_more: false }),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse(
+          notionPage({
+            id: "page-1",
+            key: "NOTION-1",
+            state: "Blocked",
+          }),
+        ),
+      );
+    const client = createClient({ fetchFn });
+
+    await expect(
+      client.blockIssue({
+        issue: createIssue({ id: "page-1", state: "In Progress" }),
+        lifecycle: {
+          ...createLifecycle(),
+          blockedState: "Blocked",
+        },
+        metadata: {
+          title: "Blocked: task needs implementation context",
+          details: "The task has no usable description.",
+          questions: ["What exact behavior should change?"],
+        },
+      }),
+    ).resolves.toMatchObject({
+      issue: {
+        id: "page-1",
+        identifier: "NOTION-1",
+        state: "Blocked",
+      },
+      state: "Blocked",
+    });
+
+    expect(fetchFn).toHaveBeenCalledTimes(4);
+    expect(fetchFn.mock.calls[1]?.[0]).toBe(
+      "https://api.notion.com/v1/comments",
+    );
+    expect(fetchFn.mock.calls[2]?.[0]).toBe(
+      "https://api.notion.com/v1/blocks/page-1/children",
+    );
+    expect(fetchFn.mock.calls[2]?.[1]?.method).toBe("PATCH");
+    expect(parseRequestBody(fetchFn.mock.calls[2]?.[1])).toEqual({
+      children: [
+        {
+          object: "block",
+          type: "paragraph",
+          paragraph: {
+            rich_text: [
+              {
+                type: "text",
+                text: {
+                  content:
+                    "Blocked: task needs implementation context\n\nThe task has no usable description.\n\n1. What exact behavior should change?",
+                },
+              },
+            ],
+          },
+        },
+      ],
+    });
+    expect(parseRequestBody(fetchFn.mock.calls[3]?.[1])).toEqual({
+      properties: {
+        Status: {
+          status: {
+            name: "Blocked",
+          },
+        },
+      },
+    });
+  });
+
   it("rejects missing configured lifecycle options with the available Notion options", async () => {
     const fetchFn = vi.fn<typeof fetch>().mockResolvedValueOnce(
       jsonResponse(

@@ -20,18 +20,22 @@ import { applyCodexEventToSession } from "../logging/session-metrics.js";
 import { createTrackerDynamicTools } from "../tracker/adapters.js";
 import {
   type IssueTracker,
+  type TrackerBlockerRunResult,
   type TrackerHandoffRunResult,
   type TrackerLifecycleConfig,
+  supportsTrackerBlockWrite,
   supportsTrackerLifecycleWrite,
 } from "../tracker/tracker.js";
 import { WorkspaceHookRunner } from "../workspace/hooks.js";
 import { validateWorkspaceCwd } from "../workspace/path-safety.js";
 import { WorkspaceManager } from "../workspace/workspace-manager.js";
+import { createSymphonyBlockDynamicTool } from "./block-tool.js";
 import { createSymphonyHandoffDynamicTool } from "./handoff-tool.js";
 import {
   type BuildTurnPromptInput,
   buildTurnPrompt,
 } from "./prompt-builder.js";
+import { prepareTurnSandboxPolicy } from "./sandbox-policy.js";
 
 export interface AgentRunnerEvent extends CodexClientEvent {
   issueId: string;
@@ -90,6 +94,7 @@ export interface AgentRunResult {
   lastTurn: CodexTurnResult | null;
   rateLimits: Record<string, unknown> | null;
   handoff: TrackerHandoffRunResult | null;
+  blocker: TrackerBlockerRunResult | null;
 }
 
 export class AgentRunnerError extends Error {
@@ -170,6 +175,9 @@ export class AgentRunner {
     const handoffRef: { current: TrackerHandoffRunResult | null } = {
       current: null,
     };
+    const blockerRef: { current: TrackerBlockerRunResult | null } = {
+      current: null,
+    };
     const liveSession = createEmptyLiveSession();
     const runAttempt: RunAttempt = {
       issueId: issue.id,
@@ -204,6 +212,37 @@ export class AgentRunner {
       });
 
       issue = await this.claimIssueBeforeAgent(issue);
+      runAttempt.status = "blocking_issue";
+      const preflightBlocker = await this.blockIssueBeforeAgentIfUnready(issue);
+      if (preflightBlocker !== null) {
+        blockerRef.current = preflightBlocker;
+        if (preflightBlocker.status === "succeeded") {
+          issue = {
+            ...issue,
+            identifier:
+              preflightBlocker.result.issue.identifier.trim().length > 0
+                ? preflightBlocker.result.issue.identifier
+                : issue.identifier,
+            state: preflightBlocker.result.issue.state,
+          };
+          runAttempt.status = "succeeded";
+        } else {
+          runAttempt.status = "failed";
+          runAttempt.error = preflightBlocker.error;
+        }
+
+        return {
+          issue,
+          workspace,
+          runAttempt,
+          liveSession,
+          turnsCompleted: 0,
+          lastTurn,
+          rateLimits,
+          handoff: handoffRef.current,
+          blocker: blockerRef.current,
+        };
+      }
 
       runAttempt.status = "launching_agent_process";
       client = this.createCodexClient({
@@ -211,13 +250,22 @@ export class AgentRunner {
         cwd: workspace.path,
         approvalPolicy: this.config.codex.approvalPolicy,
         threadSandbox: this.config.codex.threadSandbox,
-        turnSandboxPolicy: this.config.codex.turnSandboxPolicy,
+        turnSandboxPolicy: prepareTurnSandboxPolicy(
+          this.config.codex.turnSandboxPolicy,
+          workspace.path,
+        ),
         readTimeoutMs: this.config.codex.readTimeoutMs,
         turnTimeoutMs: this.config.codex.turnTimeoutMs,
         stallTimeoutMs: this.config.codex.stallTimeoutMs,
-        dynamicTools: this.createDynamicTools(issue, (result) => {
-          handoffRef.current = result;
-        }),
+        dynamicTools: this.createDynamicTools(
+          issue,
+          (result) => {
+            handoffRef.current = result;
+          },
+          (result) => {
+            blockerRef.current = result;
+          },
+        ),
         onEvent: (event) => {
           applyCodexEventToSession(liveSession, event);
           this.onEvent?.({
@@ -295,7 +343,22 @@ export class AgentRunner {
           };
           break;
         }
+        const blocker = blockerRef.current;
+        if (blocker?.status === "succeeded") {
+          issue = {
+            ...issue,
+            identifier:
+              blocker.result.issue.identifier.trim().length > 0
+                ? blocker.result.issue.identifier
+                : issue.identifier,
+            state: blocker.result.issue.state,
+          };
+          break;
+        }
         if (handoff?.status === "failed") {
+          break;
+        }
+        if (blocker?.status === "failed") {
           break;
         }
 
@@ -308,6 +371,9 @@ export class AgentRunner {
       if (handoffRef.current?.status === "failed") {
         runAttempt.status = "failed";
         runAttempt.error = handoffRef.current.error;
+      } else if (blockerRef.current?.status === "failed") {
+        runAttempt.status = "failed";
+        runAttempt.error = blockerRef.current.error;
       } else {
         runAttempt.status = "succeeded";
       }
@@ -321,6 +387,7 @@ export class AgentRunner {
         lastTurn,
         rateLimits,
         handoff: handoffRef.current,
+        blocker: blockerRef.current,
       };
     } catch (error) {
       const wrapped = this.toAgentRunnerError({
@@ -353,6 +420,7 @@ export class AgentRunner {
   private createDynamicTools(
     issue: Issue,
     onHandoff: (result: TrackerHandoffRunResult) => void,
+    onBlock: (result: TrackerBlockerRunResult) => void,
   ): CodexDynamicTool[] {
     const tools = createTrackerDynamicTools(this.config, {
       ...(this.fetchFn === undefined ? {} : { fetchFn: this.fetchFn }),
@@ -365,6 +433,17 @@ export class AgentRunner {
           lifecycle: this.lifecycleConfig(),
           tracker: this.tracker,
           onHandoff,
+        }),
+      );
+    }
+
+    if (supportsTrackerBlockWrite(this.tracker)) {
+      tools.push(
+        createSymphonyBlockDynamicTool({
+          issue,
+          lifecycle: this.lifecycleConfig(),
+          tracker: this.tracker,
+          onBlock,
         }),
       );
     }
@@ -402,6 +481,41 @@ export class AgentRunner {
       blockedState: this.config.tracker.blockedState,
       requireClaimBeforeAgent: this.config.tracker.requireClaimBeforeAgent,
     };
+  }
+
+  private async blockIssueBeforeAgentIfUnready(
+    issue: Issue,
+  ): Promise<TrackerBlockerRunResult | null> {
+    if (
+      this.config.tracker.blockedState === null ||
+      !supportsTrackerBlockWrite(this.tracker)
+    ) {
+      return null;
+    }
+
+    const metadata = buildMissingDescriptionBlocker(issue);
+    if (metadata === null) {
+      return null;
+    }
+
+    try {
+      const result = await this.tracker.blockIssue({
+        issue,
+        lifecycle: this.lifecycleConfig(),
+        metadata,
+      });
+      return {
+        status: "succeeded",
+        result,
+        metadata,
+      };
+    } catch (error) {
+      return {
+        status: "failed",
+        error: toErrorMessage(error),
+        metadata,
+      };
+    }
   }
 
   private async refreshIssueState(issue: Issue): Promise<Issue> {
@@ -512,6 +626,46 @@ function classifyFailureStatus(code: string | undefined): RunAttemptPhase {
   }
 
   return "failed";
+}
+
+function buildMissingDescriptionBlocker(
+  issue: Issue,
+): TrackerBlockerRunResult["metadata"] | null {
+  if (!isMissingIssueDescription(issue.description)) {
+    return null;
+  }
+
+  return {
+    title: "Blocked: task needs implementation context",
+    details:
+      "Symphony cannot safely start an implementation run because this tracker ticket has no usable description or acceptance criteria.",
+    questions: [
+      `What exact product or workflow behavior should ${issue.identifier} change or add?`,
+      "What acceptance criteria or validation evidence should prove the task is complete?",
+      "Are there required files, branches, prior discussions, or constraints that must be followed before opening a PR?",
+    ],
+  };
+}
+
+function isMissingIssueDescription(description: string | null): boolean {
+  if (description === null) {
+    return true;
+  }
+
+  const normalized = description.replaceAll(/\s+/g, " ").trim().toLowerCase();
+  return (
+    normalized === "" ||
+    normalized === "no description" ||
+    normalized === "no description provided"
+  );
+}
+
+function toErrorMessage(error: unknown): string {
+  if (error instanceof Error && error.message.trim().length > 0) {
+    return error.message;
+  }
+
+  return "tracker block failed";
 }
 
 async function closeBestEffort(client: AgentRunnerCodexClient): Promise<void> {
