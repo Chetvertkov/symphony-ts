@@ -22,8 +22,11 @@ import {
   type IssueTracker,
   type TrackerBlockerRunResult,
   type TrackerHandoffRunResult,
+  type TrackerIssueContext,
   type TrackerLifecycleConfig,
   supportsTrackerBlockWrite,
+  supportsTrackerIssueContextRead,
+  supportsTrackerIssueNoteWrite,
   supportsTrackerLifecycleWrite,
 } from "../tracker/tracker.js";
 import { WorkspaceHookRunner } from "../workspace/hooks.js";
@@ -36,6 +39,10 @@ import {
   buildTurnPrompt,
 } from "./prompt-builder.js";
 import { prepareTurnSandboxPolicy } from "./sandbox-policy.js";
+import {
+  createSymphonyTicketNoteDynamicTool,
+  createSymphonyTicketReadDynamicTool,
+} from "./ticket-tools.js";
 
 export interface AgentRunnerEvent extends CodexClientEvent {
   issueId: string;
@@ -448,6 +455,24 @@ export class AgentRunner {
       );
     }
 
+    if (supportsTrackerIssueContextRead(this.tracker)) {
+      tools.push(
+        createSymphonyTicketReadDynamicTool({
+          issue,
+          tracker: this.tracker,
+        }),
+      );
+    }
+
+    if (supportsTrackerIssueNoteWrite(this.tracker)) {
+      tools.push(
+        createSymphonyTicketNoteDynamicTool({
+          issue,
+          tracker: this.tracker,
+        }),
+      );
+    }
+
     return tools;
   }
 
@@ -493,7 +518,8 @@ export class AgentRunner {
       return null;
     }
 
-    const metadata = buildMissingDescriptionBlocker(issue);
+    const context = await this.readIssueContextBestEffort(issue);
+    const metadata = buildMissingDescriptionBlocker(issue, context);
     if (metadata === null) {
       return null;
     }
@@ -515,6 +541,20 @@ export class AgentRunner {
         error: toErrorMessage(error),
         metadata,
       };
+    }
+  }
+
+  private async readIssueContextBestEffort(
+    issue: Issue,
+  ): Promise<TrackerIssueContext | null> {
+    if (!supportsTrackerIssueContextRead(this.tracker)) {
+      return null;
+    }
+
+    try {
+      return await this.tracker.readIssueContext({ issue });
+    } catch {
+      return null;
     }
   }
 
@@ -630,8 +670,17 @@ function classifyFailureStatus(code: string | undefined): RunAttemptPhase {
 
 function buildMissingDescriptionBlocker(
   issue: Issue,
+  context: TrackerIssueContext | null,
 ): TrackerBlockerRunResult["metadata"] | null {
   if (!isMissingIssueDescription(issue.description)) {
+    return null;
+  }
+
+  if (hasUsableTrackerContext(context)) {
+    return null;
+  }
+
+  if (hasUnavailableTrackerContextSources(context)) {
     return null;
   }
 
@@ -658,6 +707,50 @@ function isMissingIssueDescription(description: string | null): boolean {
     normalized === "no description" ||
     normalized === "no description provided"
   );
+}
+
+function hasUsableTrackerContext(context: TrackerIssueContext | null): boolean {
+  if (context === null) {
+    return false;
+  }
+
+  return context.entries.some((entry) => hasUsableNonBlockerText(entry.text));
+}
+
+function hasUnavailableTrackerContextSources(
+  context: TrackerIssueContext | null,
+): boolean {
+  return context !== null && context.unavailableSources.length > 0;
+}
+
+function hasUsableNonBlockerText(text: string): boolean {
+  const stripped = stripKnownSymphonyBlockerText(text)
+    .replaceAll(/\s+/g, " ")
+    .trim();
+  return stripped.length >= 20;
+}
+
+function stripKnownSymphonyBlockerText(text: string): string {
+  return text
+    .replaceAll(/Blocked: task needs implementation context/gi, "")
+    .replaceAll(/Blocked: clarification needed/gi, "")
+    .replaceAll(
+      /Symphony cannot safely start an implementation run because this tracker ticket has no usable description or acceptance criteria\./gi,
+      "",
+    )
+    .replaceAll(
+      /What exact product or workflow behavior should .* change or add\?/gi,
+      "",
+    )
+    .replaceAll(
+      /What acceptance criteria or validation evidence should prove the task is complete\?/gi,
+      "",
+    )
+    .replaceAll(
+      /Are there required files, branches, prior discussions, or constraints that must be followed before opening a PR\?/gi,
+      "",
+    )
+    .replaceAll(/^\s*\d+\.\s*/gm, "");
 }
 
 function toErrorMessage(error: unknown): string {

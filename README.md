@@ -27,7 +27,9 @@ ticket fields, and status lifecycle.
 
 Write-capable adapters can also own lifecycle transitions. The bundled Notion adapter claims
 `Todo` work into `In Progress` before Codex starts and exposes a `symphony_handoff` tool so an
-agent can move ready PRs to the configured review state without raw tracker API calls.
+agent can move ready PRs to the configured review state without raw tracker API calls. It also
+exposes tracker-backed ticket context tools so agents can read Notion page body/comments and append
+ordinary checkpoints or questions during the run.
 
 ## Running Symphony Locally
 
@@ -151,8 +153,10 @@ as `WORKFLOW.md`, then change these fields before starting Symphony:
 - `codex.command`
 
 For Notion workflows, Symphony also guards against empty tickets before Codex starts: when a task
-has no usable description and `blocked_state` is configured, it posts default clarification
-questions and moves the task to the blocked state without launching a Codex turn.
+has no usable description, no usable page-body/comment context, and `blocked_state` is configured,
+it posts default clarification questions and moves the task to the blocked state without launching a
+Codex turn. Existing body/comment answers are treated as usable task context even when the
+description property itself is empty.
 
 If you want the dashboard, keep `server.port` in the workflow or pass `--port` on the CLI.
 The web dashboard now opens with a server-rendered snapshot and continues updating live in the

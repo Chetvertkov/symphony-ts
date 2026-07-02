@@ -21,6 +21,10 @@ import type {
   IssueTracker,
   TrackerBlockerMetadata,
   TrackerHandoffMetadata,
+  TrackerIssueContext,
+  TrackerIssueContextEntry,
+  TrackerIssueNoteMetadata,
+  TrackerIssueNoteResult,
   TrackerLifecycleConfig,
   TrackerLifecycleTransitionResult,
 } from "./tracker.js";
@@ -59,6 +63,13 @@ interface NotionQueryResponse {
 }
 
 interface NotionPropertyListResponse {
+  object?: unknown;
+  results?: unknown;
+  has_more?: unknown;
+  next_cursor?: unknown;
+}
+
+interface NotionListResponse {
   object?: unknown;
   results?: unknown;
   has_more?: unknown;
@@ -159,6 +170,53 @@ export class NotionTrackerClient implements IssueTracker {
     );
   }
 
+  async readIssueContext(input: {
+    issue: Issue;
+  }): Promise<TrackerIssueContext> {
+    const entries: TrackerIssueContextEntry[] = [];
+    const unavailableSources: TrackerIssueContext["unavailableSources"] = [];
+    const [bodyResult, commentsResult] = await Promise.allSettled([
+      this.readPageBodyEntries(input.issue.id),
+      this.readPageCommentEntries(input.issue.id),
+    ]);
+
+    if (bodyResult.status === "fulfilled") {
+      entries.push(...bodyResult.value);
+    } else {
+      unavailableSources.push({
+        source: "body",
+        error: toErrorMessage(
+          bodyResult.reason,
+          "Notion page body could not be read.",
+        ),
+      });
+    }
+
+    if (commentsResult.status === "fulfilled") {
+      entries.push(...commentsResult.value);
+    } else {
+      unavailableSources.push({
+        source: "comments",
+        error: toErrorMessage(
+          commentsResult.reason,
+          "Notion comments could not be read.",
+        ),
+      });
+    }
+
+    entries.sort(compareContextEntries);
+
+    return {
+      issue: {
+        id: input.issue.id,
+        identifier: input.issue.identifier,
+        state: input.issue.state,
+      },
+      entries,
+      unavailableSources,
+    };
+  }
+
   async claimIssue(input: {
     issue: Issue;
     lifecycle: TrackerLifecycleConfig;
@@ -221,6 +279,26 @@ export class NotionTrackerClient implements IssueTracker {
       state,
       field: "tracker.blocked_state",
     });
+  }
+
+  async appendIssueNote(input: {
+    issue: Issue;
+    metadata: TrackerIssueNoteMetadata;
+  }): Promise<TrackerIssueNoteResult> {
+    const destination = await this.writeIssueNoteContent({
+      issue: input.issue,
+      content: formatIssueNote(input.metadata),
+    });
+
+    return {
+      issue: {
+        id: input.issue.id,
+        identifier: input.issue.identifier,
+        state: input.issue.state,
+      },
+      destination,
+      metadata: input.metadata,
+    };
   }
 
   private async fetchIssuesByStateNames(
@@ -648,7 +726,16 @@ export class NotionTrackerClient implements IssueTracker {
     issue: Issue;
     metadata: TrackerBlockerMetadata;
   }): Promise<void> {
-    const content = formatBlockerComment(input.metadata);
+    await this.writeIssueNoteContent({
+      issue: input.issue,
+      content: formatBlockerComment(input.metadata),
+    });
+  }
+
+  private async writeIssueNoteContent(input: {
+    issue: Issue;
+    content: string;
+  }): Promise<"comment" | "body"> {
     try {
       await this.requestJson<unknown>({
         method: "POST",
@@ -657,22 +744,24 @@ export class NotionTrackerClient implements IssueTracker {
           parent: {
             page_id: input.issue.id,
           },
-          rich_text: buildRichText(content),
+          rich_text: buildRichText(input.content),
         },
       });
+      return "comment";
     } catch (error) {
       if (!isNotionInsufficientPermissionsError(error)) {
         throw error;
       }
 
-      await this.appendBlockerPageContent({
+      await this.appendIssuePageContent({
         issue: input.issue,
-        content,
+        content: input.content,
       });
+      return "body";
     }
   }
 
-  private async appendBlockerPageContent(input: {
+  private async appendIssuePageContent(input: {
     issue: Issue;
     content: string;
   }): Promise<void> {
@@ -691,6 +780,136 @@ export class NotionTrackerClient implements IssueTracker {
         ],
       },
     });
+  }
+
+  private async readPageBodyEntries(
+    pageId: string,
+  ): Promise<TrackerIssueContextEntry[]> {
+    const entries: TrackerIssueContextEntry[] = [];
+    let startCursor: string | null = null;
+
+    while (true) {
+      const response: NotionListResponse = await this.requestJson({
+        method: "GET",
+        path: `/blocks/${encodeURIComponent(pageId)}/children`,
+        query:
+          startCursor === null
+            ? {
+                page_size: String(this.pageSize),
+              }
+            : {
+                page_size: String(this.pageSize),
+                start_cursor: startCursor,
+              },
+      });
+
+      if (!Array.isArray(response.results)) {
+        throw new TrackerError(
+          ERROR_CODES.notionUnknownPayload,
+          "Notion page body payload was missing results.",
+          { details: response },
+        );
+      }
+
+      for (const block of response.results) {
+        const text = readNotionBlockPlainText(block);
+        if (text === null) {
+          continue;
+        }
+
+        entries.push({
+          source: "body",
+          text,
+          createdAt: readObjectString(block, "created_time"),
+          author: readNotionUserLabel(readObjectValue(block, "created_by")),
+        });
+      }
+
+      if (response.has_more !== true) {
+        break;
+      }
+
+      if (
+        typeof response.next_cursor !== "string" ||
+        response.next_cursor.trim() === ""
+      ) {
+        throw new TrackerError(
+          ERROR_CODES.notionMissingNextCursor,
+          "Notion page body pagination was missing next_cursor.",
+          { details: response },
+        );
+      }
+
+      startCursor = response.next_cursor;
+    }
+
+    return entries;
+  }
+
+  private async readPageCommentEntries(
+    pageId: string,
+  ): Promise<TrackerIssueContextEntry[]> {
+    const entries: TrackerIssueContextEntry[] = [];
+    let startCursor: string | null = null;
+
+    while (true) {
+      const response: NotionListResponse = await this.requestJson({
+        method: "GET",
+        path: "/comments",
+        query:
+          startCursor === null
+            ? {
+                block_id: pageId,
+                page_size: String(this.pageSize),
+              }
+            : {
+                block_id: pageId,
+                page_size: String(this.pageSize),
+                start_cursor: startCursor,
+              },
+      });
+
+      if (!Array.isArray(response.results)) {
+        throw new TrackerError(
+          ERROR_CODES.notionUnknownPayload,
+          "Notion comments payload was missing results.",
+          { details: response },
+        );
+      }
+
+      for (const comment of response.results) {
+        const text = readRichTextArray(readObjectValue(comment, "rich_text"));
+        if (text === null) {
+          continue;
+        }
+
+        entries.push({
+          source: "comment",
+          text,
+          createdAt: readObjectString(comment, "created_time"),
+          author: readNotionUserLabel(readObjectValue(comment, "created_by")),
+        });
+      }
+
+      if (response.has_more !== true) {
+        break;
+      }
+
+      if (
+        typeof response.next_cursor !== "string" ||
+        response.next_cursor.trim() === ""
+      ) {
+        throw new TrackerError(
+          ERROR_CODES.notionMissingNextCursor,
+          "Notion comments pagination was missing next_cursor.",
+          { details: response },
+        );
+      }
+
+      startCursor = response.next_cursor;
+    }
+
+    return entries;
   }
 
   private async requestJson<T>(input: {
@@ -1049,6 +1268,31 @@ function formatBlockerComment(metadata: TrackerBlockerMetadata): string {
   return lines.join("\n");
 }
 
+function formatIssueNote(metadata: TrackerIssueNoteMetadata): string {
+  const lines = metadata.title === null ? [] : [metadata.title, ""];
+  lines.push(metadata.body);
+  return lines.join("\n");
+}
+
+function compareContextEntries(
+  left: TrackerIssueContextEntry,
+  right: TrackerIssueContextEntry,
+): number {
+  if (left.createdAt === null && right.createdAt === null) {
+    return left.source.localeCompare(right.source);
+  }
+
+  if (left.createdAt === null) {
+    return 1;
+  }
+
+  if (right.createdAt === null) {
+    return -1;
+  }
+
+  return left.createdAt.localeCompare(right.createdAt);
+}
+
 function buildRichText(content: string): Array<{
   type: "text";
   text: { content: string };
@@ -1110,6 +1354,69 @@ function getPagePropertyValue(
   }
 
   return null;
+}
+
+function readNotionBlockPlainText(block: unknown): string | null {
+  const type = readObjectString(block, "type");
+  if (type === null) {
+    return null;
+  }
+
+  const typedBlock = readObjectValue(block, type);
+  const richText = readRichTextArray(readObjectValue(typedBlock, "rich_text"));
+  if (richText !== null) {
+    return richText;
+  }
+
+  const title = readObjectString(typedBlock, "title");
+  if (title !== null) {
+    return title;
+  }
+
+  return readRichTextArray(readObjectValue(typedBlock, "caption"));
+}
+
+function readRichTextArray(value: unknown): string | null {
+  if (!Array.isArray(value)) {
+    return null;
+  }
+
+  const text = value
+    .map((entry) => {
+      const plainText = readObjectString(entry, "plain_text");
+      if (plainText !== null) {
+        return plainText;
+      }
+
+      return readObjectString(readObjectValue(entry, "text"), "content") ?? "";
+    })
+    .join("")
+    .trim();
+
+  return text === "" ? null : text;
+}
+
+function readObjectValue(value: unknown, key: string): unknown {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+
+  return (value as Record<string, unknown>)[key] ?? null;
+}
+
+function readObjectString(value: unknown, key: string): string | null {
+  const rawValue = readObjectValue(value, key);
+  return typeof rawValue === "string" && rawValue.trim() !== ""
+    ? rawValue.trim()
+    : null;
+}
+
+function readNotionUserLabel(value: unknown): string | null {
+  return (
+    readObjectString(value, "name") ??
+    readObjectString(readObjectValue(value, "person"), "email") ??
+    readObjectString(value, "id")
+  );
 }
 
 function buildStateFilter(
@@ -1178,6 +1485,14 @@ function isNotionInsufficientPermissionsError(error: unknown): boolean {
     error.code === ERROR_CODES.notionApiStatus &&
     error.status === 403
   );
+}
+
+function toErrorMessage(error: unknown, fallback: string): string {
+  if (error instanceof Error && error.message.trim().length > 0) {
+    return error.message;
+  }
+
+  return fallback;
 }
 
 function toNotionPathSegment(value: string): string {

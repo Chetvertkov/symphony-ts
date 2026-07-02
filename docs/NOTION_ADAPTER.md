@@ -11,6 +11,8 @@ This guide covers the MVP Notion tracker adapter that ships in `tracker.kind: no
 - handing ready work off through the adapter-neutral `symphony_handoff` tool
 - posting clarification questions and moving non-actionable tasks through the adapter-neutral
   `symphony_block` tool
+- reading page body/comments through `symphony_ticket_read`
+- appending ordinary checkpoints, notes, and non-blocking questions through `symphony_ticket_note`
 - normalizing Notion pages into Symphony `Issue` objects
 - best-effort blocker hydration through relation properties
 
@@ -181,17 +183,38 @@ surfaces the exact failure for operator action. This keeps raw tasks from burnin
 turns without a retrievable question trail in Notion.
 
 Symphony also performs a preflight blocker check before launching Codex: if the Notion page has no
-usable `description_property` value and `blocked_state` is configured, Symphony writes default
-clarification questions and moves the task to `blocked_state` immediately. Tickets with a usable
-description still run through the normal Codex agent path, where the agent can call
-`symphony_block` for subtler ambiguities.
+usable `description_property` value, no usable page body/comment context, and `blocked_state` is
+configured, Symphony writes default clarification questions and moves the task to `blocked_state`
+immediately. It ignores Symphony's own previous default blocker template when deciding whether the
+ticket has usable context. If body/comments contain a human answer, the task still runs through the
+normal Codex agent path even when the description property itself is empty.
+
+If page body or comment reads are unavailable, this preflight check is conservative and does not
+auto-block solely from the empty description property. The agent can then use the injected ticket
+tools, surface degraded tracker mode, and decide whether to ask more questions with
+`symphony_block`.
+
+### Ticket context and notes
+
+When the Notion adapter can read a page, Symphony injects:
+
+- `symphony_ticket_read`: returns the current issue state snapshot, page body entries, readable
+  comments, and any unavailable context sources.
+- `symphony_ticket_note`: appends a plain-text/Markdown note to the ticket. It writes a Notion page
+  comment first and falls back to appending a page-body paragraph when comment insert is forbidden
+  with HTTP 403.
+
+Use these tools for ordinary checkpoints, remaining non-blocking questions, validation notes, branch
+and PR references, and context refreshes. Use `symphony_block` only when the run should move the
+task to `blocked_state` and stop automatic continuation.
 
 ### Comments
 
 Comments are optional checkpointing for ordinary progress, but `symphony_block` must leave
-retrievable questions in the ticket before moving status. Enable Notion comment insert capability
-for the integration token used by `NOTION_API_KEY` when available; otherwise the adapter falls back
-to appending the questions to the page body.
+retrievable questions in the ticket before moving status. Enable Notion comment read/insert
+capability for the integration token used by `NOTION_API_KEY` when available; otherwise the adapter
+records unavailable sources and falls back to appending writable notes/questions to the page body
+where supported.
 
 ## 8. Operational notes
 

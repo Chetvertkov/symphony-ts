@@ -49,6 +49,16 @@ async function handleMessage(message) {
         "object",
         "initialize must include a capabilities object",
       );
+      assertEqual(
+        message.params.capabilities.experimentalApi,
+        true,
+        "initialize must opt into experimentalApi",
+      );
+      assertEqual(
+        message.params.capabilities.requestAttestation,
+        false,
+        "initialize must disable attestation requests by default",
+      );
     }
 
     writeJson({
@@ -70,9 +80,19 @@ async function handleMessage(message) {
     );
     if (scenario === "linear-tool") {
       assertEqual(
-        message.params.tools?.[0]?.name,
+        message.params.dynamicTools?.[0]?.name,
         "linear_graphql",
-        "thread/start must advertise linear_graphql",
+        "thread/start must advertise linear_graphql through dynamicTools",
+      );
+      assertEqual(
+        message.params.dynamicTools?.[0]?.description,
+        "Execute one GraphQL query or mutation against the configured Linear workspace using Symphony-managed auth.",
+        "dynamic tool specs must include descriptions",
+      );
+      assertEqual(
+        message.params.dynamicTools?.[0]?.inputSchema?.type,
+        "object",
+        "dynamic tool specs must include input schemas",
       );
     }
     if (scenario === "handshake") {
@@ -242,27 +262,32 @@ async function handleMessage(message) {
 
     setTimeout(() => {
       writeJson({
-        id: "tool-1",
+        id: scenario === "linear-tool" ? 0 : "tool-1",
         method: "item/tool/call",
-        params: {
-          toolName:
-            scenario === "linear-tool" ? "linear_graphql" : "not_supported",
-          input:
-            scenario === "linear-tool"
-              ? {
+        params:
+          scenario === "linear-tool"
+            ? {
+                threadId: "thread-1",
+                turnId: `turn-${turnCount}`,
+                callId: "tool-1",
+                namespace: null,
+                tool: "linear_graphql",
+                arguments: {
                   query: "query Viewer { viewer { id name } }",
                   variables: {
                     includeArchived: false,
                   },
-                }
-              : undefined,
-        },
+                },
+              }
+            : {
+                toolName: "not_supported",
+              },
       });
     }, 10);
     return;
   }
 
-  if (message.id === "tool-1") {
+  if (message.id === "tool-1" || message.id === 0) {
     if (scenario === "linear-tool") {
       assertEqual(
         message.result?.success,
@@ -270,7 +295,13 @@ async function handleMessage(message) {
         "supported linear_graphql tool call must succeed",
       );
       assertEqual(
-        message.result?.response?.body?.data?.viewer?.id,
+        message.result?.contentItems?.[0]?.type,
+        "inputText",
+        "dynamic tool responses must use official contentItems",
+      );
+      const toolResult = JSON.parse(message.result?.contentItems?.[0]?.text);
+      assertEqual(
+        toolResult.response?.body?.data?.viewer?.id,
         "viewer-1",
         "linear_graphql tool must return the GraphQL response body",
       );
@@ -279,6 +310,11 @@ async function handleMessage(message) {
         message.result?.success,
         false,
         "unsupported tool calls must return success=false",
+      );
+      assertEqual(
+        message.result?.contentItems?.[0]?.type,
+        "inputText",
+        "unsupported tool calls must still return official contentItems",
       );
     }
 

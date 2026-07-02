@@ -932,18 +932,16 @@ Illustrative startup transcript (equivalent payload shapes are acceptable if the
 semantics):
 
 ```json
-{"id":1,"method":"initialize","params":{"clientInfo":{"name":"symphony","version":"1.0"},"capabilities":{}}}
+{"id":1,"method":"initialize","params":{"clientInfo":{"name":"symphony","version":"1.0"},"capabilities":{"experimentalApi":true,"requestAttestation":false}}}
 {"method":"initialized","params":{}}
-{"id":2,"method":"thread/start","params":{"approvalPolicy":"<implementation-defined>","sandbox":"<implementation-defined>","cwd":"/abs/workspace"}}
+{"id":2,"method":"thread/start","params":{"approvalPolicy":"<implementation-defined>","sandbox":"<implementation-defined>","cwd":"/abs/workspace","dynamicTools":[{"name":"example_tool","description":"Example client-side tool.","inputSchema":{"type":"object"}}]}}
 {"id":3,"method":"turn/start","params":{"threadId":"<thread-id>","input":[{"type":"text","text":"<rendered prompt-or-continuation-guidance>"}],"cwd":"/abs/workspace","title":"ABC-123: Example","approvalPolicy":"<implementation-defined>","sandboxPolicy":{"type":"<implementation-defined>"}}}
 ```
 
 1. `initialize` request
    - Params include:
      - `clientInfo` object (for example `{name, version}`)
-     - `capabilities` object (may be empty)
-   - If the targeted Codex app-server requires capability negotiation for dynamic tools, include the
-     necessary capability flag(s) here.
+     - `capabilities` object with `experimentalApi: true` when client-side dynamic tools are used
    - Wait for response (`read_timeout_ms`)
 2. `initialized` notification
 3. `thread/start` request
@@ -951,8 +949,8 @@ semantics):
      - `approvalPolicy` = implementation-defined session approval policy value
      - `sandbox` = implementation-defined session sandbox value
      - `cwd` = absolute workspace path
-     - If optional client-side tools are implemented, include their advertised tool specs using the
-       protocol mechanism supported by the targeted Codex app-server version.
+     - If optional client-side tools are implemented, include their advertised tool specs in
+       `dynamicTools`; each spec must include `name`, `description`, and `inputSchema`.
 4. `turn/start` request
    - Params include:
      - `threadId`
@@ -1048,7 +1046,7 @@ Unsupported dynamic tool calls:
 - Supported dynamic tool calls that are explicitly implemented and advertised by the runtime should
   be handled according to their extension contract.
 - If the agent requests a dynamic tool call (`item/tool/call`) that is not supported, return a tool
-  failure response and continue the session.
+  failure response with `success: false` and `contentItems` output, then continue the session.
 - This prevents the session from stalling on unsupported tool execution paths.
 
 Optional client-side tool extension:

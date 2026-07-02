@@ -28,6 +28,29 @@ export interface TrackerBlockerMetadata {
   details: string | null;
 }
 
+export interface TrackerIssueContextEntry {
+  source: "body" | "comment";
+  text: string;
+  createdAt: string | null;
+  author: string | null;
+}
+
+export interface TrackerIssueContextUnavailableSource {
+  source: "body" | "comments";
+  error: string;
+}
+
+export interface TrackerIssueContext {
+  issue: IssueStateSnapshot;
+  entries: TrackerIssueContextEntry[];
+  unavailableSources: TrackerIssueContextUnavailableSource[];
+}
+
+export interface TrackerIssueNoteMetadata {
+  title: string | null;
+  body: string;
+}
+
 export interface TrackerLifecycleTransitionResult {
   issue: IssueStateSnapshot;
   state: string;
@@ -57,10 +80,21 @@ export type TrackerBlockerRunResult =
       metadata: TrackerBlockerMetadata;
     };
 
+export interface TrackerIssueNoteResult {
+  issue: IssueStateSnapshot;
+  destination: "comment" | "body";
+  metadata: TrackerIssueNoteMetadata;
+}
+
 export interface IssueTracker {
   fetchCandidateIssues(): Promise<Issue[]>;
   fetchIssuesByStates(stateNames: string[]): Promise<Issue[]>;
   fetchIssueStatesByIds(issueIds: string[]): Promise<IssueStateSnapshot[]>;
+  readIssueContext?(input: { issue: Issue }): Promise<TrackerIssueContext>;
+  appendIssueNote?(input: {
+    issue: Issue;
+    metadata: TrackerIssueNoteMetadata;
+  }): Promise<TrackerIssueNoteResult>;
   claimIssue?(input: {
     issue: Issue;
     lifecycle: TrackerLifecycleConfig;
@@ -83,6 +117,12 @@ export type WriteCapableIssueTracker = IssueTracker &
 export type BlockCapableIssueTracker = IssueTracker &
   Required<Pick<IssueTracker, "blockIssue">>;
 
+export type IssueContextCapableIssueTracker = IssueTracker &
+  Required<Pick<IssueTracker, "readIssueContext">>;
+
+export type IssueNoteCapableIssueTracker = IssueTracker &
+  Required<Pick<IssueTracker, "appendIssueNote">>;
+
 export function supportsTrackerLifecycleWrite(
   tracker: IssueTracker,
 ): tracker is WriteCapableIssueTracker {
@@ -96,4 +136,16 @@ export function supportsTrackerBlockWrite(
   tracker: IssueTracker,
 ): tracker is BlockCapableIssueTracker {
   return typeof tracker.blockIssue === "function";
+}
+
+export function supportsTrackerIssueContextRead(
+  tracker: IssueTracker,
+): tracker is IssueContextCapableIssueTracker {
+  return typeof tracker.readIssueContext === "function";
+}
+
+export function supportsTrackerIssueNoteWrite(
+  tracker: IssueTracker,
+): tracker is IssueNoteCapableIssueTracker {
+  return typeof tracker.appendIssueNote === "function";
 }

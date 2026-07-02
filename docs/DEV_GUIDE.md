@@ -65,6 +65,11 @@ tests/              # Vitest tests, mirroring src/ structure
 | CLI entry | [src/cli/main.ts](src/cli/main.ts) |
 | Domain model | [src/domain/model.ts](src/domain/model.ts) |
 
+Codex client-side tools are advertised with `thread/start.params.dynamicTools`, not the legacy
+`tools` field. The client opts into `experimentalApi` during `initialize`, accepts v2
+`item/tool/call` requests with `params.tool` and `params.arguments`, and replies with official
+`contentItems` output.
+
 ---
 
 ## Step-by-Step Quick Start
@@ -180,7 +185,9 @@ Description: {{ issue.description | default: "No description provided." }}
 
 Work on this issue. When done, use the configured handoff mechanism. For Linear,
 use the linear_graphql tool. For write-capable adapters such as Notion, call
-the symphony_handoff tool with PR evidence and validation results.
+the symphony_ticket_read tool before repo edits, symphony_ticket_note for
+retrievable checkpoints, and symphony_handoff with PR evidence and validation
+results when ready for review.
 ```
 
 **WORKFLOW.md field reference**:
