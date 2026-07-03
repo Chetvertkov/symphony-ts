@@ -65,6 +65,11 @@ tests/              # Vitest tests, mirroring src/ structure
 | CLI entry | [src/cli/main.ts](src/cli/main.ts) |
 | Domain model | [src/domain/model.ts](src/domain/model.ts) |
 
+Codex client-side tools are advertised with `thread/start.params.dynamicTools`, not the legacy
+`tools` field. The client opts into `experimentalApi` during `initialize`, accepts v2
+`item/tool/call` requests with `params.tool` and `params.arguments`, and replies with official
+`contentItems` output.
+
 ---
 
 ## Step-by-Step Quick Start
@@ -180,7 +185,9 @@ Description: {{ issue.description | default: "No description provided." }}
 
 Work on this issue. When done, use the configured handoff mechanism. For Linear,
 use the linear_graphql tool. For write-capable adapters such as Notion, call
-the symphony_handoff tool with PR evidence and validation results.
+the symphony_ticket_read tool before repo edits, symphony_ticket_note for
+retrievable checkpoints, and symphony_handoff with PR evidence and validation
+results when ready for review.
 ```
 
 **WORKFLOW.md field reference**:
@@ -269,18 +276,22 @@ codex:
   turn_sandbox_policy:
     type: workspaceWrite
     writableRoots:
-      - /tmp/symphony_workspaces
-    readOnlyAccess:
-      type: fullAccess
+      - "{{ workspace.path }}"
+      - "{{ workspace.git_dir }}"
     networkAccess: true
     excludeTmpdirEnvVar: false
     excludeSlashTmp: false
 ```
 
+Symphony expands `{{ workspace.path }}` and `{{ workspace.git_dir }}` before starting Codex. For
+`workspaceWrite` policies it also ensures the active workspace and its `.git` metadata directory are
+present in `writableRoots`, so agents can create branches, commits, pushes, and PRs when the rest of
+the workflow allows those operations.
+
 With that in place, env-based credentials exported before launching Symphony are available to turn
-commands. If a specific external CLI still does not find usable credentials in your environment,
-provide that tool's credential explicitly via an env var such as `GH_TOKEN`, `GITHUB_TOKEN`, or a
-provider-specific API key.
+commands. If a specific external CLI still does not find usable credentials or executable paths in
+your environment, provide that tool's credential via an env var such as `GH_TOKEN`, `GITHUB_TOKEN`,
+or a provider-specific API key and launch `codex.command` with an explicit `PATH=...` prefix.
 
 The exact accepted sandbox and approval values depend on the installed Codex app-server version. To
 inspect the local schema, run `codex app-server generate-json-schema --out <dir>` and inspect the

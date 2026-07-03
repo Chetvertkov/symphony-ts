@@ -154,12 +154,13 @@ codex:
   #   turn_sandbox_policy:
   #     type: workspaceWrite
   #     writableRoots:
-  #       - /tmp/symphony_workspaces
-  #     readOnlyAccess:
-  #       type: fullAccess
+  #       - "{{ workspace.path }}"
+  #       - "{{ workspace.git_dir }}"
   #     networkAccess: true
   #     excludeTmpdirEnvVar: false
   #     excludeSlashTmp: false
+  # Symphony expands the workspace placeholders and ensures the active workspace
+  # plus its .git metadata directory are writable for workspaceWrite turns.
   # Default: (not set)
   turn_sandbox_policy: null
 
@@ -213,6 +214,12 @@ Rules:
 2. Keep changes scoped and safe.
 3. Run the test suite before finishing.
 4. Do not add secrets or credentials to the repository.
+5. When `symphony_ticket_read` is available, call it before repo edits and treat page body/comments
+   as live ticket context alongside the rendered description.
+6. When `symphony_ticket_note` is available, use it for retrievable checkpoints, branch/PR links,
+   validation notes, and non-blocking questions.
+7. When the task is not implementation-ready and `symphony_block` is available, use it for concrete
+   blocker questions and blocked-state write-back instead of raw tracker API calls.
 
 If this workflow needs environment variables from the launching shell:
 

@@ -266,6 +266,225 @@ describe("AgentRunner", () => {
     expect(createCodexClient).not.toHaveBeenCalled();
   });
 
+  it("blocks underspecified tracker issues before starting Codex", async () => {
+    const root = await createRoot();
+    const createCodexClient = vi.fn();
+    const tracker = {
+      ...createTracker(),
+      blockIssue: vi.fn(async () => ({
+        issue: { id: "issue-1", identifier: "ABC-123", state: "Blocked" },
+        state: "Blocked",
+      })),
+    };
+    const runner = new AgentRunner({
+      config: createConfig(root, "unused"),
+      tracker,
+      createCodexClient,
+    });
+
+    const result = await runner.run({
+      issue: { ...ISSUE_FIXTURE, description: null },
+      attempt: null,
+    });
+
+    expect(result.runAttempt.status).toBe("succeeded");
+    expect(result.turnsCompleted).toBe(0);
+    expect(result.lastTurn).toBeNull();
+    expect(result.issue.state).toBe("Blocked");
+    expect(result.blocker).toEqual({
+      status: "succeeded",
+      metadata: expect.objectContaining({
+        title: "Blocked: task needs implementation context",
+        questions: expect.arrayContaining([
+          "What acceptance criteria or validation evidence should prove the task is complete?",
+        ]),
+      }),
+      result: {
+        issue: { id: "issue-1", identifier: "ABC-123", state: "Blocked" },
+        state: "Blocked",
+      },
+    });
+    expect(tracker.blockIssue).toHaveBeenCalledWith({
+      issue: expect.objectContaining({
+        id: "issue-1",
+        description: null,
+      }),
+      lifecycle: expect.objectContaining({
+        blockedState: "Needs decision",
+      }),
+      metadata: expect.objectContaining({
+        details: expect.stringContaining("no usable description"),
+      }),
+    });
+    expect(createCodexClient).not.toHaveBeenCalled();
+    expect(tracker.fetchIssueStatesByIds).not.toHaveBeenCalled();
+  });
+
+  it("starts the agent with ticket tools when Notion body context answers an empty description", async () => {
+    const root = await createRoot();
+    const prompts: string[] = [];
+    const toolResults: Record<string, unknown> = {};
+    const tracker = {
+      ...createTracker({
+        refreshStates: [
+          { id: "issue-1", identifier: "ABC-123", state: "Done" },
+        ],
+      }),
+      blockIssue: vi.fn(),
+      readIssueContext: vi.fn(async () => ({
+        issue: { id: "issue-1", identifier: "ABC-123", state: "In Progress" },
+        entries: [
+          {
+            source: "body" as const,
+            text: "Implement the workflow so Symphony reads ticket answers, asks any remaining blocker questions, and opens a PR when validation passes.",
+            createdAt: "2026-07-02T08:00:00.000Z",
+            author: "Operator",
+          },
+        ],
+        unavailableSources: [],
+      })),
+      appendIssueNote: vi.fn(async ({ issue, metadata }) => ({
+        issue: {
+          id: issue.id,
+          identifier: issue.identifier,
+          state: issue.state,
+        },
+        destination: "body" as const,
+        metadata,
+      })),
+    };
+    const createCodexClient = vi.fn(
+      (input: AgentRunnerCodexClientFactoryInput) =>
+        createStubCodexClient(prompts, input, {
+          startSession: async ({ prompt }) => {
+            const readTool = input.dynamicTools.find(
+              (tool) => tool.name === "symphony_ticket_read",
+            );
+            const noteTool = input.dynamicTools.find(
+              (tool) => tool.name === "symphony_ticket_note",
+            );
+            if (readTool === undefined || noteTool === undefined) {
+              throw new Error("Expected ticket read and note tools.");
+            }
+
+            toolResults.read = await readTool.execute({});
+            toolResults.note = await noteTool.execute({
+              title: "Implementation checkpoint",
+              body: "Read the ticket context and started implementation.",
+            });
+            prompts.push(prompt);
+            input.onEvent({
+              event: "session_started",
+              timestamp: new Date("2026-03-06T00:00:00.000Z").toISOString(),
+              codexAppServerPid: "1001",
+              sessionId: "thread-1-turn-1",
+              threadId: "thread-1",
+              turnId: "turn-1",
+            });
+            return {
+              status: "completed" as const,
+              threadId: "thread-1",
+              turnId: "turn-1",
+              sessionId: "thread-1-turn-1",
+              usage: null,
+              rateLimits: null,
+              message: "ticket context read",
+            };
+          },
+        }),
+    );
+    const runner = new AgentRunner({
+      config: createConfig(root, "unused"),
+      tracker,
+      createCodexClient,
+    });
+
+    const result = await runner.run({
+      issue: { ...ISSUE_FIXTURE, description: null },
+      attempt: null,
+    });
+
+    expect(result.runAttempt.status).toBe("succeeded");
+    expect(result.turnsCompleted).toBe(1);
+    expect(result.issue.state).toBe("Done");
+    expect(tracker.blockIssue).not.toHaveBeenCalled();
+    expect(tracker.readIssueContext).toHaveBeenCalledTimes(2);
+    expect(tracker.appendIssueNote).toHaveBeenCalledWith({
+      issue: expect.objectContaining({ id: "issue-1" }),
+      metadata: {
+        title: "Implementation checkpoint",
+        body: "Read the ticket context and started implementation.",
+      },
+    });
+    expect(createCodexClient).toHaveBeenCalledTimes(1);
+    const createdInput = createCodexClient.mock.calls[0]?.[0];
+    expect(createdInput?.dynamicTools.map((tool) => tool.name)).toEqual(
+      expect.arrayContaining([
+        "symphony_block",
+        "symphony_ticket_read",
+        "symphony_ticket_note",
+      ]),
+    );
+    expect(toolResults.read).toEqual(
+      expect.objectContaining({
+        success: true,
+        entries: expect.arrayContaining([
+          expect.objectContaining({ source: "body", author: "Operator" }),
+        ]),
+      }),
+    );
+    expect(toolResults.note).toEqual(
+      expect.objectContaining({
+        success: true,
+        destination: "body",
+      }),
+    );
+  });
+
+  it("does not preflight-block when tracker context sources are unavailable", async () => {
+    const root = await createRoot();
+    const tracker = {
+      ...createTracker({
+        refreshStates: [
+          { id: "issue-1", identifier: "ABC-123", state: "Done" },
+        ],
+      }),
+      blockIssue: vi.fn(),
+      readIssueContext: vi.fn(async () => ({
+        issue: { id: "issue-1", identifier: "ABC-123", state: "In Progress" },
+        entries: [],
+        unavailableSources: [
+          {
+            source: "comments" as const,
+            error: "Notion comments could not be read.",
+          },
+        ],
+      })),
+    };
+    const createCodexClient = vi.fn(
+      (input: AgentRunnerCodexClientFactoryInput) =>
+        createStubCodexClient([], input, {
+          statuses: ["completed"],
+        }),
+    );
+    const runner = new AgentRunner({
+      config: createConfig(root, "unused"),
+      tracker,
+      createCodexClient,
+    });
+
+    const result = await runner.run({
+      issue: { ...ISSUE_FIXTURE, description: null },
+      attempt: null,
+    });
+
+    expect(result.runAttempt.status).toBe("succeeded");
+    expect(result.turnsCompleted).toBe(1);
+    expect(result.issue.state).toBe("Done");
+    expect(tracker.blockIssue).not.toHaveBeenCalled();
+    expect(createCodexClient).toHaveBeenCalledTimes(1);
+  });
+
   it("records structured handoff from the dynamic tool and stops refreshing active state", async () => {
     const root = await createRoot();
     const prompts: string[] = [];
@@ -336,6 +555,106 @@ describe("AgentRunner", () => {
     });
     expect(result.issue.state).toBe("In Review");
     expect(tracker.fetchIssueStatesByIds).not.toHaveBeenCalled();
+  });
+
+  it("records structured blocker questions from the dynamic tool and stops refreshing active state", async () => {
+    const root = await createRoot();
+    const prompts: string[] = [];
+    const tracker = {
+      ...createTracker(),
+      blockIssue: vi.fn(async () => ({
+        issue: { id: "issue-1", identifier: "ABC-123", state: "Blocked" },
+        state: "Blocked",
+      })),
+    };
+    const runner = new AgentRunner({
+      config: createConfig(root, "unused"),
+      tracker,
+      createCodexClient: (input) =>
+        createStubCodexClient(prompts, input, {
+          startSession: async ({ prompt }) => {
+            const blockTool = input.dynamicTools.find(
+              (tool) => tool.name === "symphony_block",
+            );
+            if (blockTool === undefined) {
+              throw new Error("Expected symphony_block dynamic tool.");
+            }
+            await blockTool.execute({
+              details: "The task lacks acceptance criteria.",
+              questions: [
+                "Which user flow should this change affect?",
+                "What validation proves the task is done?",
+              ],
+            });
+            prompts.push(prompt);
+            return {
+              status: "completed" as const,
+              threadId: "thread-1",
+              turnId: "turn-1",
+              sessionId: "thread-1-turn-1",
+              usage: null,
+              rateLimits: null,
+              message: "blocked",
+            };
+          },
+        }),
+    });
+
+    const result = await runner.run({
+      issue: ISSUE_FIXTURE,
+      attempt: null,
+    });
+
+    expect(result.blocker).toEqual({
+      status: "succeeded",
+      metadata: {
+        title: null,
+        details: "The task lacks acceptance criteria.",
+        questions: [
+          "Which user flow should this change affect?",
+          "What validation proves the task is done?",
+        ],
+      },
+      result: {
+        issue: { id: "issue-1", identifier: "ABC-123", state: "Blocked" },
+        state: "Blocked",
+      },
+    });
+    expect(result.issue.state).toBe("Blocked");
+    expect(tracker.fetchIssueStatesByIds).not.toHaveBeenCalled();
+  });
+
+  it("adds the Symphony workspace and git metadata directory to workspace-write turn sandbox roots", async () => {
+    const root = await createRoot();
+    const createCodexClient = vi.fn((input) =>
+      createStubCodexClient([], input, {
+        statuses: ["completed"],
+      }),
+    );
+    const runner = new AgentRunner({
+      config: createConfig(root, "unused"),
+      tracker: createTracker({
+        refreshStates: [
+          { id: "issue-1", identifier: "ABC-123", state: "Done" },
+        ],
+      }),
+      createCodexClient,
+    });
+
+    await runner.run({
+      issue: ISSUE_FIXTURE,
+      attempt: null,
+    });
+
+    expect(createCodexClient).toHaveBeenCalledTimes(1);
+    const sandboxPolicy = createCodexClient.mock.calls[0]?.[0]
+      .turnSandboxPolicy as { writableRoots?: string[] };
+    expect(sandboxPolicy.writableRoots).toEqual(
+      expect.arrayContaining([
+        join(root, "issue-1"),
+        join(root, "issue-1", ".git"),
+      ]),
+    );
   });
 
   it("removes temporary workspace artifacts before each attempt starts", async () => {

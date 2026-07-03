@@ -114,6 +114,7 @@ describe("OrchestratorRuntimeHost", () => {
         requestsRemaining: 9,
       },
       handoff: null,
+      blocker: null,
     });
     await host.waitForIdle();
 

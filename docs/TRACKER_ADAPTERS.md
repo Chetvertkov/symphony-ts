@@ -9,7 +9,7 @@ Bundled adapters:
 | Kind | Auth fallback | Required fields | Dynamic tool |
 | --- | --- | --- | --- |
 | `linear` | `LINEAR_API_KEY` | `project_slug` | `linear_graphql` |
-| `notion` | `NOTION_API_KEY` | `data_source_id`, `title_property`, `status_property` | `symphony_handoff` |
+| `notion` | `NOTION_API_KEY` | `data_source_id`, `title_property`, `status_property` | `symphony_handoff`, `symphony_block`, `symphony_ticket_read`, `symphony_ticket_note` |
 
 The adapter layer exists so platforms can be added without changing orchestrator, workspace,
 dashboard, or prompt-rendering behavior.
@@ -23,8 +23,11 @@ interface IssueTracker {
   fetchCandidateIssues(): Promise<Issue[]>;
   fetchIssuesByStates(stateNames: string[]): Promise<Issue[]>;
   fetchIssueStatesByIds(issueIds: string[]): Promise<IssueStateSnapshot[]>;
+  readIssueContext?(input): Promise<TrackerIssueContext>;
+  appendIssueNote?(input): Promise<TrackerIssueNoteResult>;
   claimIssue?(input): Promise<TrackerLifecycleTransitionResult>;
   handoffIssue?(input): Promise<TrackerLifecycleTransitionResult>;
+  blockIssue?(input): Promise<TrackerLifecycleTransitionResult>;
 }
 ```
 
@@ -48,8 +51,12 @@ workers when state reconciliation leaves active states, and cleans workspaces fo
 
 Lifecycle writes are optional adapter capabilities. If an adapter implements `claimIssue` and
 `handoffIssue`, Symphony can claim work before Codex starts and provide the issue-scoped
-`symphony_handoff` dynamic tool. Adapters that do not implement those methods keep their existing
-read-only behavior.
+`symphony_handoff` dynamic tool. If it implements `blockIssue`, Symphony can provide the
+issue-scoped `symphony_block` dynamic tool for clarification questions and blocked-state
+write-back. If it implements `readIssueContext` and `appendIssueNote`, Symphony can provide
+issue-scoped ticket tools for reading tracker-native body/comment context and appending ordinary
+notes without requiring an unrelated connector. Adapters that do not implement those methods keep
+their existing behavior.
 
 ## WORKFLOW.md Selection
 
@@ -200,8 +207,22 @@ exact matching `status` or `select` options with `PATCH /v1/pages/{page_id}`.
   continuation.
 - If handoff status write-back fails, Symphony pauses automatic continuation and surfaces
   `tracker_handoff_failed` for operator action.
-- Notion comments are not required for lifecycle status writes. Comment failures are degraded
-  checkpointing, not a blocker for status transition when page/status write access works.
+- The agent calls `symphony_block` with specific questions when the task is not
+  implementation-ready. Notion writes a page comment first, then moves the ticket to
+  `blocked_state`. If comments are forbidden with HTTP 403, Notion appends the questions to the page
+  body before moving status; if all question write paths fail, automatic continuation pauses so
+  operators see the broken tracker path instead of repeated turns.
+- For Notion, Symphony also blocks before Codex starts only when the configured description field is
+  empty and the readable page body/comments do not contain usable human context. The preflight check
+  strips Symphony's own default blocker template before deciding whether context is usable.
+- If page body/comment reads are partially unavailable, Symphony skips this automatic preflight
+  block and lets the agent inspect degraded context through `symphony_ticket_read`.
+- The agent can call `symphony_ticket_read` to refresh page body/comment context and
+  `symphony_ticket_note` to append ordinary checkpoints, questions, validation notes, branch names,
+  and PR links. `symphony_ticket_note` uses the same comment-first, page-body fallback write path as
+  blocker questions.
+- Ordinary Notion comments are optional checkpointing, but blocker questions are required because
+  they are the retrievable question trail before a status change to `blocked_state`.
 
 See [docs/NOTION_ADAPTER.md](./NOTION_ADAPTER.md) for full setup and examples.
 

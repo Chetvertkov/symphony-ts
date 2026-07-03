@@ -9,6 +9,10 @@ This guide covers the MVP Notion tracker adapter that ships in `tracker.kind: no
 - reconciling current state by page ID
 - claiming eligible tasks into a configured running state before Codex starts
 - handing ready work off through the adapter-neutral `symphony_handoff` tool
+- posting clarification questions and moving non-actionable tasks through the adapter-neutral
+  `symphony_block` tool
+- reading page body/comments through `symphony_ticket_read`
+- appending ordinary checkpoints, notes, and non-blocking questions through `symphony_ticket_note`
 - normalizing Notion pages into Symphony `Issue` objects
 - best-effort blocker hydration through relation properties
 
@@ -110,9 +114,8 @@ codex:
   turn_sandbox_policy:
     type: workspaceWrite
     writableRoots:
-      - ~/symphony-workspaces/your-repo
-    readOnlyAccess:
-      type: fullAccess
+      - "{{ workspace.path }}"
+      - "{{ workspace.git_dir }}"
     networkAccess: true
 ---
 
@@ -157,11 +160,61 @@ If no configured handoff option exists, Symphony reports a validation error list
 Notion options. If the handoff status write fails, Symphony pauses automatic continuation and
 surfaces `tracker_handoff_failed` for operator action instead of burning another Codex turn.
 
+### Blocker questions
+
+When the task is not implementation-ready, call the injected tool:
+
+```json
+{
+  "title": "Blocked: clarification needed",
+  "details": "The task is missing concrete acceptance criteria.",
+  "questions": [
+    "Which user flow should this change affect?",
+    "What observable validation proves this is done?"
+  ]
+}
+```
+
+Symphony writes a Notion page comment first, then moves the task to the configured
+`blocked_state`. If Notion rejects the comments endpoint with HTTP 403, Symphony falls back to
+appending the blocker questions to the page body before changing status. If both question write
+paths fail, or if the status write fails, Symphony suppresses further automatic progress and
+surfaces the exact failure for operator action. This keeps raw tasks from burning repeated Codex
+turns without a retrievable question trail in Notion.
+
+Symphony also performs a preflight blocker check before launching Codex: if the Notion page has no
+usable `description_property` value, no usable page body/comment context, and `blocked_state` is
+configured, Symphony writes default clarification questions and moves the task to `blocked_state`
+immediately. It ignores Symphony's own previous default blocker template when deciding whether the
+ticket has usable context. If body/comments contain a human answer, the task still runs through the
+normal Codex agent path even when the description property itself is empty.
+
+If page body or comment reads are unavailable, this preflight check is conservative and does not
+auto-block solely from the empty description property. The agent can then use the injected ticket
+tools, surface degraded tracker mode, and decide whether to ask more questions with
+`symphony_block`.
+
+### Ticket context and notes
+
+When the Notion adapter can read a page, Symphony injects:
+
+- `symphony_ticket_read`: returns the current issue state snapshot, page body entries, readable
+  comments, and any unavailable context sources.
+- `symphony_ticket_note`: appends a plain-text/Markdown note to the ticket. It writes a Notion page
+  comment first and falls back to appending a page-body paragraph when comment insert is forbidden
+  with HTTP 403.
+
+Use these tools for ordinary checkpoints, remaining non-blocking questions, validation notes, branch
+and PR references, and context refreshes. Use `symphony_block` only when the run should move the
+task to `blocked_state` and stop automatic continuation.
+
 ### Comments
 
-Comments are optional checkpointing. The lifecycle path does not depend on comment write access:
-if page/status writes work, status transition still succeeds even when Notion comments are
-unavailable.
+Comments are optional checkpointing for ordinary progress, but `symphony_block` must leave
+retrievable questions in the ticket before moving status. Enable Notion comment read/insert
+capability for the integration token used by `NOTION_API_KEY` when available; otherwise the adapter
+records unavailable sources and falls back to appending writable notes/questions to the page body
+where supported.
 
 ## 8. Operational notes
 

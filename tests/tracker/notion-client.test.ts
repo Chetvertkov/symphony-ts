@@ -362,6 +362,111 @@ describe("NotionTrackerClient", () => {
     ]);
   });
 
+  it("reads Notion page body and comments as ticket context", async () => {
+    const fetchFn = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(
+        jsonResponse({
+          object: "list",
+          results: [
+            {
+              object: "block",
+              id: "block-1",
+              type: "paragraph",
+              created_time: "2026-07-02T08:00:00.000Z",
+              created_by: {
+                object: "user",
+                id: "user-1",
+                name: "Operator",
+              },
+              paragraph: {
+                rich_text: [
+                  {
+                    type: "text",
+                    plain_text:
+                      "Implement Symphony ticket context reads before blocking.",
+                    text: {
+                      content:
+                        "Implement Symphony ticket context reads before blocking.",
+                    },
+                  },
+                ],
+              },
+            },
+          ],
+          has_more: false,
+          next_cursor: null,
+        }),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse({
+          object: "list",
+          results: [
+            {
+              object: "comment",
+              id: "comment-1",
+              created_time: "2026-07-02T08:01:00.000Z",
+              created_by: {
+                object: "user",
+                id: "user-2",
+                name: "Reviewer",
+              },
+              rich_text: [
+                {
+                  type: "text",
+                  plain_text:
+                    "Acceptance: the agent can ask questions and write notes in the ticket.",
+                  text: {
+                    content:
+                      "Acceptance: the agent can ask questions and write notes in the ticket.",
+                  },
+                },
+              ],
+            },
+          ],
+          has_more: false,
+          next_cursor: null,
+        }),
+      );
+    const client = createClient({ fetchFn });
+
+    await expect(
+      client.readIssueContext({
+        issue: createIssue({ id: "page-1", state: "In Progress" }),
+      }),
+    ).resolves.toEqual({
+      issue: {
+        id: "page-1",
+        identifier: "NOTION-1",
+        state: "In Progress",
+      },
+      entries: [
+        {
+          source: "body",
+          text: "Implement Symphony ticket context reads before blocking.",
+          createdAt: "2026-07-02T08:00:00.000Z",
+          author: "Operator",
+        },
+        {
+          source: "comment",
+          text: "Acceptance: the agent can ask questions and write notes in the ticket.",
+          createdAt: "2026-07-02T08:01:00.000Z",
+          author: "Reviewer",
+        },
+      ],
+      unavailableSources: [],
+    });
+
+    const bodyUrl = new URL(fetchFn.mock.calls[0]?.[0] as string);
+    expect(bodyUrl.pathname).toBe("/v1/blocks/page-1/children");
+    expect(bodyUrl.searchParams.get("page_size")).toBe("100");
+
+    const commentsUrl = new URL(fetchFn.mock.calls[1]?.[0] as string);
+    expect(commentsUrl.pathname).toBe("/v1/comments");
+    expect(commentsUrl.searchParams.get("block_id")).toBe("page-1");
+    expect(commentsUrl.searchParams.get("page_size")).toBe("100");
+  });
+
   it("omits missing or inaccessible pages during state refresh", async () => {
     const fetchFn = vi
       .fn<typeof fetch>()
@@ -505,6 +610,227 @@ describe("NotionTrackerClient", () => {
           },
         },
       },
+    });
+  });
+
+  it("posts blocker questions before moving the page to the configured blocked state", async () => {
+    const fetchFn = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(
+        jsonResponse(
+          dataSourceSchema({
+            statusOptions: ["Todo", "In Progress", "Blocked"],
+          }),
+        ),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse({ object: "comment", id: "comment-1" }),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse(
+          notionPage({
+            id: "page-1",
+            key: "NOTION-1",
+            state: "Blocked",
+          }),
+        ),
+      );
+    const client = createClient({ fetchFn });
+
+    await expect(
+      client.blockIssue({
+        issue: createIssue({ id: "page-1", state: "In Progress" }),
+        lifecycle: {
+          ...createLifecycle(),
+          blockedState: "Blocked",
+        },
+        metadata: {
+          title: null,
+          details: "The task is missing acceptance criteria.",
+          questions: [
+            "Which user flow should this change affect?",
+            "What observable acceptance check proves this is done?",
+          ],
+        },
+      }),
+    ).resolves.toEqual({
+      issue: {
+        id: "page-1",
+        identifier: "NOTION-1",
+        state: "Blocked",
+      },
+      state: "Blocked",
+    });
+
+    expect(fetchFn).toHaveBeenCalledTimes(3);
+    expect(fetchFn.mock.calls[1]?.[0]).toBe(
+      "https://api.notion.com/v1/comments",
+    );
+    expect(fetchFn.mock.calls[1]?.[1]?.method).toBe("POST");
+    expect(parseRequestBody(fetchFn.mock.calls[1]?.[1])).toEqual({
+      parent: {
+        page_id: "page-1",
+      },
+      rich_text: [
+        {
+          type: "text",
+          text: {
+            content:
+              "Blocked: clarification needed\n\nThe task is missing acceptance criteria.\n\n1. Which user flow should this change affect?\n2. What observable acceptance check proves this is done?",
+          },
+        },
+      ],
+    });
+    expect(parseRequestBody(fetchFn.mock.calls[2]?.[1])).toEqual({
+      properties: {
+        Status: {
+          status: {
+            name: "Blocked",
+          },
+        },
+      },
+    });
+  });
+
+  it("falls back to appending blocker questions to the page when Notion comments are forbidden", async () => {
+    const fetchFn = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(
+        jsonResponse(
+          dataSourceSchema({
+            statusOptions: ["Todo", "In Progress", "Blocked"],
+          }),
+        ),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse(
+          {
+            code: "restricted_resource",
+            message: "Insufficient permissions for this endpoint.",
+          },
+          403,
+        ),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse({ object: "list", results: [], has_more: false }),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse(
+          notionPage({
+            id: "page-1",
+            key: "NOTION-1",
+            state: "Blocked",
+          }),
+        ),
+      );
+    const client = createClient({ fetchFn });
+
+    await expect(
+      client.blockIssue({
+        issue: createIssue({ id: "page-1", state: "In Progress" }),
+        lifecycle: {
+          ...createLifecycle(),
+          blockedState: "Blocked",
+        },
+        metadata: {
+          title: "Blocked: task needs implementation context",
+          details: "The task has no usable description.",
+          questions: ["What exact behavior should change?"],
+        },
+      }),
+    ).resolves.toMatchObject({
+      issue: {
+        id: "page-1",
+        identifier: "NOTION-1",
+        state: "Blocked",
+      },
+      state: "Blocked",
+    });
+
+    expect(fetchFn).toHaveBeenCalledTimes(4);
+    expect(fetchFn.mock.calls[1]?.[0]).toBe(
+      "https://api.notion.com/v1/comments",
+    );
+    expect(fetchFn.mock.calls[2]?.[0]).toBe(
+      "https://api.notion.com/v1/blocks/page-1/children",
+    );
+    expect(fetchFn.mock.calls[2]?.[1]?.method).toBe("PATCH");
+    expect(parseRequestBody(fetchFn.mock.calls[2]?.[1])).toEqual({
+      children: [
+        {
+          object: "block",
+          type: "paragraph",
+          paragraph: {
+            rich_text: [
+              {
+                type: "text",
+                text: {
+                  content:
+                    "Blocked: task needs implementation context\n\nThe task has no usable description.\n\n1. What exact behavior should change?",
+                },
+              },
+            ],
+          },
+        },
+      ],
+    });
+    expect(parseRequestBody(fetchFn.mock.calls[3]?.[1])).toEqual({
+      properties: {
+        Status: {
+          status: {
+            name: "Blocked",
+          },
+        },
+      },
+    });
+  });
+
+  it("appends ordinary issue notes through the Notion ticket write path", async () => {
+    const fetchFn = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(
+        jsonResponse({ object: "comment", id: "comment-1" }),
+      );
+    const client = createClient({ fetchFn });
+
+    await expect(
+      client.appendIssueNote({
+        issue: createIssue({ id: "page-1", state: "In Progress" }),
+        metadata: {
+          title: "Implementation checkpoint",
+          body: "Read the ticket context and started implementation.",
+        },
+      }),
+    ).resolves.toEqual({
+      issue: {
+        id: "page-1",
+        identifier: "NOTION-1",
+        state: "In Progress",
+      },
+      destination: "comment",
+      metadata: {
+        title: "Implementation checkpoint",
+        body: "Read the ticket context and started implementation.",
+      },
+    });
+
+    expect(fetchFn).toHaveBeenCalledTimes(1);
+    expect(fetchFn.mock.calls[0]?.[0]).toBe(
+      "https://api.notion.com/v1/comments",
+    );
+    expect(parseRequestBody(fetchFn.mock.calls[0]?.[1])).toEqual({
+      parent: {
+        page_id: "page-1",
+      },
+      rich_text: [
+        {
+          type: "text",
+          text: {
+            content:
+              "Implementation checkpoint\n\nRead the ticket context and started implementation.",
+          },
+        },
+      ],
     });
   });
 

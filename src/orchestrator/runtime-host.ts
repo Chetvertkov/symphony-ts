@@ -381,38 +381,39 @@ export class OrchestratorRuntimeHost implements DashboardServerHost {
     },
   ): Promise<void> {
     this.workers.delete(execution.issueId);
+    const lifecycleFailure = getLifecycleFailure(execution.lastResult);
 
     await this.logger?.log(
-      execution.lastResult?.handoff?.status === "failed"
+      lifecycleFailure !== null
         ? "warn"
         : input.outcome === "normal"
           ? "info"
           : "error",
-      execution.lastResult?.handoff?.status === "failed"
-        ? "tracker_handoff_failed"
+      lifecycleFailure !== null
+        ? lifecycleFailure.event
         : input.outcome === "normal"
           ? "worker_exit_normal"
           : "worker_exit_abnormal",
-      execution.lastResult?.handoff?.status === "failed"
-        ? "Tracker handoff failed; automatic continuation is paused for operator action."
+      lifecycleFailure !== null
+        ? lifecycleFailure.message
         : input.outcome === "normal"
           ? "Worker completed normally."
           : "Worker completed abnormally.",
       {
         outcome:
-          execution.lastResult?.handoff?.status === "failed"
+          lifecycleFailure !== null
             ? "blocked"
             : input.outcome === "normal"
               ? "completed"
               : "failed",
         ...(input.reason === undefined ? {} : { reason: input.reason }),
-        ...(execution.lastResult?.handoff?.status === "failed"
-          ? {
-              reason: "tracker_handoff_failed",
-              error_code: ERROR_CODES.trackerHandoffFailed,
-              error: execution.lastResult.handoff.error,
-            }
-          : {}),
+        ...(lifecycleFailure === null
+          ? {}
+          : {
+              reason: lifecycleFailure.reason,
+              error_code: lifecycleFailure.errorCode,
+              error: lifecycleFailure.error,
+            }),
         issue_id: execution.issueId,
         issue_identifier: execution.issueIdentifier,
         session_id: execution.lastResult?.liveSession.sessionId ?? null,
@@ -429,6 +430,7 @@ export class OrchestratorRuntimeHost implements DashboardServerHost {
       ...(input.reason === undefined ? {} : { reason: input.reason }),
       endedAt: input.endedAt ?? this.now(),
       handoff: execution.lastResult?.handoff ?? null,
+      blocker: execution.lastResult?.blocker ?? null,
       progressSignature:
         execution.lastResult === null
           ? null
@@ -1108,6 +1110,38 @@ function toErrorMessage(error: unknown): string {
   }
 
   return "worker failed";
+}
+
+function getLifecycleFailure(result: AgentRunResult | null): {
+  event: "tracker_handoff_failed" | "tracker_block_failed";
+  reason: "tracker_handoff_failed" | "tracker_block_failed";
+  errorCode: string;
+  error: string;
+  message: string;
+} | null {
+  if (result?.handoff?.status === "failed") {
+    return {
+      event: "tracker_handoff_failed",
+      reason: "tracker_handoff_failed",
+      errorCode: ERROR_CODES.trackerHandoffFailed,
+      error: result.handoff.error,
+      message:
+        "Tracker handoff failed; automatic continuation is paused for operator action.",
+    };
+  }
+
+  if (result?.blocker?.status === "failed") {
+    return {
+      event: "tracker_block_failed",
+      reason: "tracker_block_failed",
+      errorCode: ERROR_CODES.trackerBlockFailed,
+      error: result.blocker.error,
+      message:
+        "Tracker blocker write failed; automatic continuation is paused for operator action.",
+    };
+  }
+
+  return null;
 }
 
 function extractErrorCode(error: unknown): string | null {

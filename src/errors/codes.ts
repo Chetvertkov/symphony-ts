@@ -20,6 +20,7 @@ export const ERROR_CODES = {
   trackerResponseMalformed: "tracker_response_malformed",
   trackerClaimFailed: "tracker_claim_failed",
   trackerHandoffFailed: "tracker_handoff_failed",
+  trackerBlockFailed: "tracker_block_failed",
   trackerNoProgressOrHandoffMissing: "no_progress_or_handoff_missing",
   missingTrackerApiKey: "missing_tracker_api_key",
   missingTrackerProjectSlug: "missing_tracker_project_slug",

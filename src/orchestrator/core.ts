@@ -21,6 +21,7 @@ import {
 import {
   type IssueStateSnapshot,
   type IssueTracker,
+  type TrackerBlockerRunResult,
   type TrackerHandoffRunResult,
   type TrackerLifecycleConfig,
   supportsTrackerLifecycleWrite,
@@ -330,6 +331,7 @@ export class OrchestratorCore {
     reason?: string;
     endedAt?: Date;
     handoff?: TrackerHandoffRunResult | null;
+    blocker?: TrackerBlockerRunResult | null;
     progressSignature?: string | null;
   }): RetryEntry | null {
     const runningEntry = this.state.running[input.issueId];
@@ -357,6 +359,21 @@ export class OrchestratorCore {
           attempt: nextRetryAttempt(runningEntry.retryAttempt),
           identifier: runningEntry.identifier,
           error: `${ERROR_CODES.trackerHandoffFailed}: ${input.handoff.error}`,
+        });
+      }
+
+      if (input.blocker?.status === "succeeded") {
+        this.state.completed.add(input.issueId);
+        this.releaseClaim(input.issueId);
+        delete this.state.progressSignatures[input.issueId];
+        return null;
+      }
+
+      if (input.blocker?.status === "failed") {
+        return this.holdForOperatorAction(input.issueId, {
+          attempt: nextRetryAttempt(runningEntry.retryAttempt),
+          identifier: runningEntry.identifier,
+          error: `${ERROR_CODES.trackerBlockFailed}: ${input.blocker.error}`,
         });
       }
 

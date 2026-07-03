@@ -7,6 +7,11 @@ const DEFAULT_CLIENT_INFO = Object.freeze({
   version: "0.1.0",
 });
 
+const DEFAULT_CAPABILITIES = Object.freeze({
+  experimentalApi: true,
+  requestAttestation: false,
+});
+
 const DEFAULT_MAX_LINE_BYTES = 10 * 1024 * 1024;
 
 type JsonObject = Record<string, unknown>;
@@ -48,9 +53,11 @@ export interface CodexClientEvent {
 }
 
 export interface CodexDynamicToolDefinition {
+  namespace?: string;
   name: string;
   description?: string;
   inputSchema?: Record<string, unknown>;
+  deferLoading?: boolean;
 }
 
 export interface CodexDynamicTool extends CodexDynamicToolDefinition {
@@ -297,7 +304,10 @@ export class CodexAppServerClient {
     try {
       await this.request("initialize", {
         clientInfo: this.options.clientInfo ?? DEFAULT_CLIENT_INFO,
-        capabilities: this.options.capabilities ?? {},
+        capabilities: {
+          ...DEFAULT_CAPABILITIES,
+          ...(this.options.capabilities ?? {}),
+        },
       });
       this.send({
         method: "initialized",
@@ -308,7 +318,7 @@ export class CodexAppServerClient {
         approvalPolicy: this.options.approvalPolicy,
         sandbox: this.options.threadSandbox,
         cwd: this.options.cwd,
-        tools: this.getAdvertisedTools(),
+        dynamicTools: this.getAdvertisedDynamicTools(),
       });
 
       const threadId = extractNestedString(threadResult, [
@@ -503,9 +513,13 @@ export class CodexAppServerClient {
 
     if (isToolCallRequest(parsed, method)) {
       const toolName = extractToolName(parsed);
-      const tool = toolName === null ? null : this.findDynamicTool(toolName);
+      const toolNamespace = extractToolNamespace(parsed);
+      const tool =
+        toolName === null
+          ? null
+          : this.findDynamicTool(toolName, toolNamespace);
       if (tool !== null && responseId !== null) {
-        void this.handleDynamicToolCall(responseId, tool, parsed);
+        void this.handleDynamicToolCall(parsed.id as JsonRpcId, tool, parsed);
         return;
       }
 
@@ -514,10 +528,12 @@ export class CodexAppServerClient {
           id: parsed.id,
           result: {
             success: false,
-            error: {
-              code: ERROR_CODES.codexDynamicToolRejected,
-              message: `Unsupported tool call: ${toolName ?? "unknown"}`,
-            },
+            contentItems: [
+              {
+                type: "inputText",
+                text: `Unsupported tool call: ${toolName ?? "unknown"}`,
+              },
+            ],
           },
         });
       }
@@ -793,31 +809,38 @@ export class CodexAppServerClient {
     return this.options.maxLineBytes ?? DEFAULT_MAX_LINE_BYTES;
   }
 
-  private getAdvertisedTools(): CodexDynamicToolDefinition[] {
+  private getAdvertisedDynamicTools(): CodexDynamicToolDefinition[] {
     const advertised = new Map<string, CodexDynamicToolDefinition>();
 
     for (const tool of this.options.tools ?? []) {
-      advertised.set(tool.name, tool);
+      advertised.set(dynamicToolKey(tool.name, tool.namespace ?? null), {
+        ...normalizeDynamicToolDefinition(tool),
+      });
     }
 
     for (const tool of this.options.dynamicTools ?? []) {
-      advertised.set(tool.name, {
+      advertised.set(dynamicToolKey(tool.name, tool.namespace ?? null), {
+        ...(tool.namespace === undefined ? {} : { namespace: tool.namespace }),
         name: tool.name,
-        ...(tool.description === undefined
+        description: tool.description ?? `Symphony dynamic tool ${tool.name}.`,
+        inputSchema: tool.inputSchema ?? emptyObjectJsonSchema(),
+        ...(tool.deferLoading === undefined
           ? {}
-          : { description: tool.description }),
-        ...(tool.inputSchema === undefined
-          ? {}
-          : { inputSchema: tool.inputSchema }),
+          : { deferLoading: tool.deferLoading }),
       });
     }
 
     return [...advertised.values()];
   }
 
-  private findDynamicTool(name: string): CodexDynamicTool | null {
+  private findDynamicTool(
+    name: string,
+    namespace: string | null,
+  ): CodexDynamicTool | null {
     return (
-      this.options.dynamicTools?.find((tool) => tool.name === name) ?? null
+      this.options.dynamicTools?.find(
+        (tool) => tool.name === name && (tool.namespace ?? null) === namespace,
+      ) ?? null
     );
   }
 
@@ -830,17 +853,19 @@ export class CodexAppServerClient {
       const result = await tool.execute(extractToolInput(message));
       this.send({
         id: requestId,
-        result,
+        result: normalizeDynamicToolCallResponse(result),
       });
     } catch (error) {
       this.send({
         id: requestId,
         result: {
           success: false,
-          error: {
-            code: ERROR_CODES.codexDynamicToolRejected,
-            message: `Dynamic tool ${tool.name} failed: ${toErrorMessage(error)}`,
-          },
+          contentItems: [
+            {
+              type: "inputText",
+              text: `Dynamic tool ${tool.name} failed: ${toErrorMessage(error)}`,
+            },
+          ],
         },
       });
     }
@@ -930,11 +955,20 @@ function extractToolName(message: JsonObject): string | null {
   const directNames = [
     extractNestedString(message, ["params", "toolName"]),
     extractNestedString(message, ["params", "name"]),
+    extractNestedString(message, ["params", "tool"]),
     extractNestedString(message, ["params", "tool", "name"]),
     extractNestedString(message, ["name"]),
   ];
 
   return directNames.find((value) => value !== null) ?? null;
+}
+
+function extractToolNamespace(message: JsonObject): string | null {
+  return (
+    extractNestedString(message, ["params", "namespace"]) ??
+    extractNestedString(message, ["params", "tool", "namespace"]) ??
+    extractNestedString(message, ["namespace"])
+  );
 }
 
 function extractToolInput(message: JsonObject): unknown {
@@ -964,6 +998,92 @@ function extractToolInput(message: JsonObject): unknown {
   }
 
   return undefined;
+}
+
+function normalizeDynamicToolDefinition(
+  tool: CodexDynamicToolDefinition,
+): CodexDynamicToolDefinition {
+  return {
+    ...(tool.namespace === undefined ? {} : { namespace: tool.namespace }),
+    name: tool.name,
+    description: tool.description ?? `Symphony dynamic tool ${tool.name}.`,
+    inputSchema: tool.inputSchema ?? emptyObjectJsonSchema(),
+    ...(tool.deferLoading === undefined
+      ? {}
+      : { deferLoading: tool.deferLoading }),
+  };
+}
+
+function normalizeDynamicToolCallResponse(result: unknown): JsonObject {
+  if (isDynamicToolCallResponse(result)) {
+    return result;
+  }
+
+  const success =
+    result !== null &&
+    typeof result === "object" &&
+    !Array.isArray(result) &&
+    typeof (result as JsonObject).success === "boolean"
+      ? Boolean((result as JsonObject).success)
+      : true;
+
+  return {
+    success,
+    contentItems: [
+      {
+        type: "inputText",
+        text: stringifyDynamicToolResult(result),
+      },
+    ],
+  };
+}
+
+function isDynamicToolCallResponse(value: unknown): value is JsonObject {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    return false;
+  }
+
+  const object = value as JsonObject;
+  return (
+    typeof object.success === "boolean" &&
+    Array.isArray(object.contentItems) &&
+    object.contentItems.every(isDynamicToolContentItem)
+  );
+}
+
+function isDynamicToolContentItem(value: unknown): boolean {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    return false;
+  }
+
+  const object = value as JsonObject;
+  return (
+    (object.type === "inputText" && typeof object.text === "string") ||
+    (object.type === "inputImage" && typeof object.imageUrl === "string")
+  );
+}
+
+function stringifyDynamicToolResult(result: unknown): string {
+  if (typeof result === "string") {
+    return result;
+  }
+
+  try {
+    return JSON.stringify(result) ?? String(result);
+  } catch {
+    return String(result);
+  }
+}
+
+function emptyObjectJsonSchema(): Record<string, unknown> {
+  return {
+    type: "object",
+    additionalProperties: false,
+  };
+}
+
+function dynamicToolKey(name: string, namespace: string | null): string {
+  return namespace === null ? name : `${namespace}/${name}`;
 }
 
 function extractUsage(message: JsonObject): CodexUsage | null {
