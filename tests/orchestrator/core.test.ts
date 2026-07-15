@@ -871,6 +871,7 @@ function createConfig(overrides?: {
     capabilities: {
       github: {
         required: false,
+        credentialSource: "environment",
       },
     },
     server: {

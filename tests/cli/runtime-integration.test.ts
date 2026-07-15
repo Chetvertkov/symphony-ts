@@ -611,6 +611,7 @@ function createConfig(
     capabilities: {
       github: {
         required: false,
+        credentialSource: "environment",
       },
     },
     server: {

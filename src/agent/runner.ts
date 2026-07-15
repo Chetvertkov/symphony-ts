@@ -39,6 +39,10 @@ import {
   GhGithubCapabilityProbe,
   type GithubCapabilityProbe,
 } from "./github-capability.js";
+import {
+  GhAuthTokenCredentialProvider,
+  type GithubCredentialProvider,
+} from "./github-credential.js";
 import { createSymphonyHandoffDynamicTool } from "./handoff-tool.js";
 import {
   type BuildTurnPromptInput,
@@ -94,6 +98,7 @@ export interface AgentRunnerOptions {
   fetchFn?: typeof fetch;
   environment?: NodeJS.ProcessEnv;
   githubCapabilityProbe?: GithubCapabilityProbe;
+  githubCredentialProvider?: GithubCredentialProvider;
   onEvent?: (event: AgentRunnerEvent) => void;
 }
 
@@ -169,6 +174,8 @@ export class AgentRunner {
 
   private readonly githubCapabilityProbe: GithubCapabilityProbe;
 
+  private readonly githubCredentialProvider: GithubCredentialProvider;
+
   private readonly onEvent: ((event: AgentRunnerEvent) => void) | undefined;
 
   constructor(options: AgentRunnerOptions) {
@@ -191,6 +198,8 @@ export class AgentRunner {
     this.environment = options.environment ?? process.env;
     this.githubCapabilityProbe =
       options.githubCapabilityProbe ?? new GhGithubCapabilityProbe();
+    this.githubCredentialProvider =
+      options.githubCredentialProvider ?? new GhAuthTokenCredentialProvider();
     this.onEvent = options.onEvent;
   }
 
@@ -243,8 +252,11 @@ export class AgentRunner {
         this.config.codex.turnSandboxPolicy,
         workspace.path,
       );
+      let codexEnvironment = this.environment;
 
       if (this.config.capabilities.github.required) {
+        runAttempt.status = "validating_capabilities";
+        codexEnvironment = await this.resolveGithubEnvironment();
         client = this.createCodexClient({
           command: this.config.codex.command,
           cwd: workspace.path,
@@ -255,7 +267,7 @@ export class AgentRunner {
           turnTimeoutMs: this.config.codex.turnTimeoutMs,
           stallTimeoutMs: this.config.codex.stallTimeoutMs,
           dynamicTools: [],
-          environment: this.environment,
+          environment: codexEnvironment,
           onEvent: (event) => {
             applyCodexEventToSession(liveSession, event);
             this.onEvent?.({
@@ -269,7 +281,6 @@ export class AgentRunner {
           },
         });
         abortController.bindClient(client);
-        runAttempt.status = "validating_capabilities";
         await this.githubCapabilityProbe.probe({
           workspacePath: workspace.path,
           sandboxPolicy: turnSandboxPolicy,
@@ -331,7 +342,7 @@ export class AgentRunner {
           turnTimeoutMs: this.config.codex.turnTimeoutMs,
           stallTimeoutMs: this.config.codex.stallTimeoutMs,
           dynamicTools,
-          environment: this.environment,
+          environment: codexEnvironment,
           onEvent: (event) => {
             applyCodexEventToSession(liveSession, event);
             this.onEvent?.({
@@ -538,6 +549,29 @@ export class AgentRunner {
     return tools;
   }
 
+  private async resolveGithubEnvironment(): Promise<NodeJS.ProcessEnv> {
+    const environment = { ...this.environment };
+    if (
+      this.config.capabilities.github.credentialSource !== "gh_auth_token" ||
+      hasExplicitGithubToken(environment)
+    ) {
+      return environment;
+    }
+
+    const credentialEnvironment = Object.fromEntries(
+      Object.entries(environment).filter(
+        ([name]) => name !== "GH_TOKEN" && name !== "GITHUB_TOKEN",
+      ),
+    );
+    const token = await this.githubCredentialProvider.getToken({
+      environment: credentialEnvironment,
+    });
+    return {
+      ...credentialEnvironment,
+      GH_TOKEN: token,
+    };
+  }
+
   private async claimIssueBeforeAgent(issue: Issue): Promise<Issue> {
     if (
       !this.config.tracker.requireClaimBeforeAgent ||
@@ -707,6 +741,12 @@ async function cleanupWorkspaceArtifacts(workspacePath: string): Promise<void> {
     force: true,
     recursive: true,
   });
+}
+
+function hasExplicitGithubToken(environment: NodeJS.ProcessEnv): boolean {
+  return [environment.GH_TOKEN, environment.GITHUB_TOKEN].some(
+    (value) => typeof value === "string" && value.trim().length > 0,
+  );
 }
 
 function createDefaultCodexClient(

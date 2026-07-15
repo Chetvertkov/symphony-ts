@@ -34,6 +34,7 @@ export const DEFAULT_TURN_TIMEOUT_MS = 3_600_000;
 export const DEFAULT_READ_TIMEOUT_MS = 5_000;
 export const DEFAULT_STALL_TIMEOUT_MS = 300_000;
 export const DEFAULT_GITHUB_CAPABILITY_REQUIRED = false;
+export const DEFAULT_GITHUB_CREDENTIAL_SOURCE = "environment" as const;
 export const DEFAULT_OBSERVABILITY_ENABLED = true;
 export const DEFAULT_OBSERVABILITY_REFRESH_MS = 1_000;
 export const DEFAULT_OBSERVABILITY_RENDER_INTERVAL_MS = 16;
@@ -83,6 +84,7 @@ export const SPEC_DEFAULTS = Object.freeze({
   capabilities: {
     github: {
       required: DEFAULT_GITHUB_CAPABILITY_REQUIRED,
+      credentialSource: DEFAULT_GITHUB_CREDENTIAL_SOURCE,
     },
   },
   observability: {

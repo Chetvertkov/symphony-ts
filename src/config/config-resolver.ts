@@ -12,6 +12,7 @@ import {
   DEFAULT_ACTIVE_STATES,
   DEFAULT_CODEX_COMMAND,
   DEFAULT_GITHUB_CAPABILITY_REQUIRED,
+  DEFAULT_GITHUB_CREDENTIAL_SOURCE,
   DEFAULT_HOOK_TIMEOUT_MS,
   DEFAULT_LINEAR_ENDPOINT,
   DEFAULT_LINEAR_NETWORK_TIMEOUT_MS,
@@ -38,6 +39,7 @@ import {
 } from "./defaults.js";
 import type {
   DispatchValidationResult,
+  GithubCredentialSource,
   ResolvedWorkflowConfig,
 } from "./types.js";
 
@@ -154,6 +156,9 @@ export function resolveWorkflowConfig(
         required:
           readBoolean(githubCapability.required) ??
           DEFAULT_GITHUB_CAPABILITY_REQUIRED,
+        credentialSource: readGithubCredentialSource(
+          githubCapability.credential_source,
+        ),
       },
     },
     server: {
@@ -280,6 +285,17 @@ function readBoolean(value: unknown): boolean | null {
   }
 
   return null;
+}
+
+function readGithubCredentialSource(value: unknown): GithubCredentialSource {
+  if (typeof value !== "string") {
+    return DEFAULT_GITHUB_CREDENTIAL_SOURCE;
+  }
+
+  const normalized = value.trim().toLowerCase();
+  return normalized === "gh_auth_token"
+    ? "gh_auth_token"
+    : DEFAULT_GITHUB_CREDENTIAL_SOURCE;
 }
 
 function readPositiveInteger(value: unknown): number | null {

@@ -115,6 +115,15 @@ capabilities:
     # Default: false
     required: false
 
+    # Credential handling for the worker app-server:
+    # - environment: use GH_TOKEN/GITHUB_TOKEN or credentials already visible
+    #   at the Codex command boundary.
+    # - gh_auth_token: preserve explicit env tokens; otherwise read the current
+    #   github.com token from `gh auth token` in the Symphony host process and
+    #   pass it to Codex only in memory. Log in once with `gh auth login`.
+    # Default: environment
+    credential_source: environment
+
 # ============================================================
 # agent — Concurrency and retry behaviour
 # ============================================================
@@ -234,7 +243,8 @@ Rules:
 If this workflow needs environment variables from the launching shell:
 
 1. Launch Codex with `--config shell_environment_policy.inherit=all`.
-2. Export the required environment variables before launching Symphony.
+2. Export the required environment variables before launching Symphony. For GitHub, alternatively
+   set `capabilities.github.credential_source: gh_auth_token` and log in once with `gh auth login`.
 
 If the agent must call networked tools during a turn:
 
@@ -250,6 +260,11 @@ pass before `thread/start` or `turn/start`. Fix `gh` installation, authenticatio
 access, or sandbox network access, then retry only the selected held issue with
 `POST /api/v1/holds/<url-encoded-issue-identifier>/retry`. Restart Symphony instead when the repaired
 environment is only available to a new process.
+
+With `credential_source: gh_auth_token`, Symphony keeps the GitHub CLI token in memory only and
+re-reads it for a new worker or explicit retry. Non-empty `GH_TOKEN` and `GITHUB_TOKEN` values always
+take priority. Codex and its agent commands can access the selected credential, so enable this only
+for trusted workflows.
 
 When finished:
 

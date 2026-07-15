@@ -538,6 +538,7 @@ function createConfig(): ResolvedWorkflowConfig {
     capabilities: {
       github: {
         required: false,
+        credentialSource: "environment",
       },
     },
     server: {

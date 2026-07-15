@@ -246,10 +246,121 @@ describe("AgentRunner", () => {
     expect(result.lastTurn?.status).toBe("completed");
   });
 
+  it("bridges the current gh auth token into the worker environment only when opted in", async () => {
+    const root = await createRoot();
+    const config = createConfig(root, "unused");
+    config.capabilities.github.required = true;
+    config.capabilities.github.credentialSource = "gh_auth_token";
+    const environment: NodeJS.ProcessEnv = {
+      PATH: "C:\\tools",
+      GH_TOKEN: "  ",
+      GITHUB_TOKEN: "",
+    };
+    const getToken = vi.fn().mockResolvedValue("keyring-secret");
+    const probe = {
+      probe: vi.fn().mockResolvedValue({
+        identity: "octocat",
+        repository: "example/project",
+        canPush: true as const,
+      }),
+    };
+    const createCodexClient = vi.fn((input) =>
+      createStubCodexClient([], input, {
+        statuses: ["completed"],
+      }),
+    );
+    const runner = new AgentRunner({
+      config,
+      tracker: createTracker({
+        refreshStates: [
+          { id: "issue-1", identifier: "ABC-123", state: "Done" },
+        ],
+      }),
+      environment,
+      githubCredentialProvider: { getToken },
+      githubCapabilityProbe: probe,
+      createCodexClient,
+    });
+
+    await runner.run({ issue: ISSUE_FIXTURE, attempt: null });
+
+    expect(getToken).toHaveBeenCalledWith({
+      environment: {
+        PATH: "C:\\tools",
+      },
+    });
+    expect(environment).toEqual({
+      PATH: "C:\\tools",
+      GH_TOKEN: "  ",
+      GITHUB_TOKEN: "",
+    });
+    expect(createCodexClient).toHaveBeenCalledTimes(1);
+    expect(createCodexClient.mock.calls[0]?.[0].environment).toEqual({
+      PATH: "C:\\tools",
+      GH_TOKEN: "keyring-secret",
+    });
+    expect(probe.probe).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(["GH_TOKEN", "GITHUB_TOKEN"] as const)(
+    "preserves an explicit %s instead of reading the gh keyring",
+    async (variable) => {
+      const root = await createRoot();
+      const config = createConfig(root, "unused");
+      config.capabilities.github.required = true;
+      config.capabilities.github.credentialSource = "gh_auth_token";
+      const getToken = vi
+        .fn()
+        .mockRejectedValue(new Error("must not read the keyring"));
+      const createCodexClient = vi.fn((input) =>
+        createStubCodexClient([], input, {
+          statuses: ["completed"],
+        }),
+      );
+      const runner = new AgentRunner({
+        config,
+        tracker: createTracker({
+          refreshStates: [
+            { id: "issue-1", identifier: "ABC-123", state: "Done" },
+          ],
+        }),
+        environment: {
+          PATH: "C:\\tools",
+          [variable]: "explicit-secret",
+        },
+        githubCredentialProvider: { getToken },
+        githubCapabilityProbe: {
+          probe: vi.fn().mockResolvedValue({
+            identity: "octocat",
+            repository: "example/project",
+            canPush: true as const,
+          }),
+        },
+        createCodexClient,
+      });
+
+      await runner.run({ issue: ISSUE_FIXTURE, attempt: null });
+
+      expect(getToken).not.toHaveBeenCalled();
+      expect(createCodexClient.mock.calls[0]?.[0].environment).toMatchObject({
+        [variable]: "explicit-secret",
+      });
+      expect(
+        createCodexClient.mock.calls[0]?.[0].environment,
+      ).not.toHaveProperty(
+        variable === "GH_TOKEN" ? "GITHUB_TOKEN" : "GH_TOKEN",
+      );
+    },
+  );
+
   it("stops after a successful before_run when the effective GitHub probe returns HTTP 401", async () => {
     const root = await createRoot();
     const config = createConfig(root, "command-401");
     config.capabilities.github.required = true;
+    config.capabilities.github.credentialSource = "gh_auth_token";
+    const getToken = vi
+      .fn()
+      .mockRejectedValue(new Error("must not replace an explicit token"));
     const hooks = {
       run: vi.fn().mockResolvedValue(true),
       runBestEffort: vi.fn(),
@@ -267,6 +378,7 @@ describe("AgentRunner", () => {
         ...process.env,
         GH_TOKEN: "inherited-secret",
       },
+      githubCredentialProvider: { getToken },
     });
 
     await expect(
@@ -282,6 +394,7 @@ describe("AgentRunner", () => {
       workspacePath: join(root, "issue-1"),
     });
     expect(tracker.claimIssue).not.toHaveBeenCalled();
+    expect(getToken).not.toHaveBeenCalled();
     expect(hooks.runBestEffort).toHaveBeenCalledTimes(1);
   });
 
@@ -1069,6 +1182,7 @@ function createConfig(root: string, scenario: string): ResolvedWorkflowConfig {
     capabilities: {
       github: {
         required: false,
+        credentialSource: "environment",
       },
     },
     server: {

@@ -467,6 +467,20 @@ startup behavior.
   - Probe output is bounded to 64 KiB per stream where custom command caps are supported. Windows
     sandbox execution uses the app-server's built-in bounded capture because current Codex versions
     reject a custom `outputBytesCap` there.
+- `github.credential_source` (string)
+  - Default: `environment`.
+  - `environment` starts the app-server with a snapshot of Symphony's launch environment and does
+    not copy credentials out of a host credential store.
+  - `gh_auth_token` preserves any non-empty `GH_TOKEN` or `GITHUB_TOKEN` already present. When both
+    are absent, Symphony runs `gh auth token --hostname github.com` as a direct, bounded argv call in
+    the Symphony launch environment, keeps the returned token only in memory, and adds it as
+    `GH_TOKEN` to the cloned app-server environment.
+  - An explicit environment token always wins, including when it is invalid; Symphony must not
+    silently replace it with keyring state. The bridge never writes the token to a workflow, temp
+    file, log, error, dashboard, or command line. Because the Codex process and its agent commands
+    receive the bridged credential, this mode is intended only for trusted workflows.
+  - Credential loading is not capability proof. The normal `command/exec` checks must still pass in
+    the prepared Codex sandbox before any session starts.
 
 ### 5.4 Prompt Template Contract
 
@@ -601,6 +615,7 @@ This section is intentionally redundant so a coding agent can implement the conf
 - `codex.read_timeout_ms`: integer, default `5000`
 - `codex.stall_timeout_ms`: integer, default `300000`
 - `capabilities.github.required`: boolean, default `false`
+- `capabilities.github.credential_source`: `environment` or `gh_auth_token`, default `environment`
 - `server.port` (extension): integer, optional; enables the optional HTTP server, `0` may be used
   for ephemeral local bind, and CLI `--port` overrides it
 
@@ -1156,9 +1171,9 @@ Behavior:
 
 1. Create/reuse workspace for issue.
 2. Run `hooks.before_run` when configured.
-3. When `capabilities.github.required` is enabled, verify authenticated GitHub identity, resolve the
-   workspace target repository, and verify that repository reports push permission without mutating
-   GitHub.
+3. When `capabilities.github.required` is enabled, resolve its configured credential source,
+   verify authenticated GitHub identity, resolve the workspace target repository, and verify that
+   repository reports push permission without mutating GitHub.
 4. Build prompt from workflow template.
 5. Start app-server session.
 6. Forward app-server events to orchestrator.
@@ -1568,7 +1583,8 @@ API design notes:
    - Hook timeout/failure
 
 3. `External Capability Failures`
-   - `github_cli_not_found`: `gh` cannot be resolved in the Codex command environment.
+   - `github_cli_not_found`: `gh` cannot be resolved where the configured credential is loaded or
+     in the Codex command environment.
    - `github_auth_invalid`: authentication is missing, invalid, expired, or returns HTTP 401.
    - `github_permission_denied`: repository access returns HTTP 403 or push permission is false.
    - `github_capability_transient`: timeout, network, provider, or unclassified probe failure.

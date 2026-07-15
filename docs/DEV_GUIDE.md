@@ -226,6 +226,7 @@ results when ready for review.
 | `codex.read_timeout_ms` | Max time in ms to wait for the next Codex event before declaring stream stalled | `5000` |
 | `codex.stall_timeout_ms` | Max silent time in ms before a running agent is declared stalled and stopped | `300000` |
 | `capabilities.github.required` | Require a read-only `gh` identity, target-repository, and push-permission preflight before Codex starts | `false` |
+| `capabilities.github.credential_source` | Use inherited env credentials, or bridge the current `gh auth` token into Codex memory-only | `environment` |
 | `server.port` | HTTP dashboard port; omit or `null` to disable | `null` |
 | `observability.dashboard_enabled` | Enable live dashboard updates when the HTTP server is running | `true` |
 | `observability.refresh_ms` | Dashboard heartbeat interval in ms for time-based refreshes | `1000` |
@@ -300,7 +301,14 @@ For workflows that must push through GitHub CLI, enable the opt-in preflight:
 capabilities:
   github:
     required: true
+    credential_source: gh_auth_token
 ```
+
+With `gh_auth_token`, log in once with `gh auth login`. If neither `GH_TOKEN` nor `GITHUB_TOKEN` is
+already set, Symphony reads the current `github.com` token from the GitHub CLI credential store for
+each worker and passes it to that worker's app-server as an in-memory `GH_TOKEN`. Symphony does not
+persist or print it. Explicit env tokens have priority and are never silently replaced. This bridge
+is high-trust: Codex and commands launched by the agent can access the credential they need to push.
 
 After `hooks.before_run` succeeds, Symphony initializes the worker's Codex app-server and runs
 read-only `gh` checks through its experimental `command/exec` method. The checks use the ticket
@@ -402,6 +410,7 @@ These fields take effect on the next poll tick without restarting Symphony:
 - `agent.max_retry_backoff_ms`
 - `hooks.timeout_ms`
 - `capabilities.github.required`
+- `capabilities.github.credential_source`
 
 ---
 
@@ -417,16 +426,18 @@ These fields take effect on the next poll tick without restarting Symphony:
 - Use an absolute path in WORKFLOW.md: `codex.command: "/usr/local/bin/codex app-server"`
 
 **GitHub capability preflight is on operator hold**
-- `github_cli_not_found`: install `gh` or make it resolvable through the launch environment's
-  Codex command environment.
-- `github_auth_invalid`: authenticate `gh` in that environment or provide a valid `GH_TOKEN` or
-  `GITHUB_TOKEN` without writing it to workflow files or logs.
+- `github_cli_not_found`: install `gh` and make it resolvable in both the Symphony launch environment
+  and the Codex command environment.
+- `github_auth_invalid`: with `credential_source: gh_auth_token`, run `gh auth login` again if the
+  stored credential was revoked or expired. Otherwise provide a valid `GH_TOKEN` or `GITHUB_TOKEN`
+  without writing it to workflow files or logs.
 - `github_permission_denied`: grant the authenticated identity push access to the workspace target
   repository, and resolve organization or SSO authorization requirements.
 - After correcting a deterministic failure, explicitly retry only the selected held issue with
   `POST /api/v1/holds/<url-encoded-issue-identifier>/retry`, or restart Symphony if the repaired
-  environment is only available to a new process. Transient/network failures retry automatically
-  with normal failure backoff.
+  environment is only available to a new process. The `gh_auth_token` source is re-read on the
+  selected issue's retry, so a completed `gh auth login` does not require a Symphony restart.
+  Transient/network failures retry automatically with normal failure backoff.
 
 **Agent stalls and never finishes**
 - `codex.stall_timeout_ms` (default 5 minutes) will kill and retry a stalled agent

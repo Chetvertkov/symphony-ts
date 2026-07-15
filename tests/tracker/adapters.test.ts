@@ -117,6 +117,7 @@ function createLinearConfig(
     capabilities: {
       github: {
         required: false,
+        credentialSource: "environment",
       },
     },
     server: {

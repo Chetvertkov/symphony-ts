@@ -48,8 +48,11 @@ export interface WorkflowCodexConfig {
 export interface WorkflowCapabilitiesConfig {
   github: {
     required: boolean;
+    credentialSource: GithubCredentialSource;
   };
 }
+
+export type GithubCredentialSource = "environment" | "gh_auth_token";
 
 export interface WorkflowServerConfig {
   port: number | null;
