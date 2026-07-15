@@ -28,6 +28,37 @@ afterEach(async () => {
 });
 
 describe("CodexAppServerClient", () => {
+  it("runs command/exec in the initialized app-server with the exact prepared sandbox and no environment overrides", async () => {
+    const workspace = await createWorkspace();
+    const client = createClient("command-only", workspace, [], {
+      environment: {
+        ...process.env,
+        GH_TOKEN: "inherited-secret",
+      },
+    });
+    const sandboxPolicy = {
+      type: "workspaceWrite",
+      writableRoots: [workspace, join(workspace, ".git")],
+      networkAccess: true,
+    };
+
+    const result = await client.execCommand({
+      command: ["gh", "api", "user", "--jq", ".login"],
+      cwd: workspace,
+      timeoutMs: 15_000,
+      ...(process.platform === "win32" ? {} : { outputBytesCap: 64 * 1024 }),
+      sandboxPolicy,
+    });
+
+    expect(result).toEqual({
+      exitCode: 0,
+      stdout: "octocat\n",
+      stderr: "",
+    });
+
+    await client.close();
+  });
+
   it("launches the app-server, buffers partial stdout lines, and auto-resolves approvals/tool calls", async () => {
     const workspace = await createWorkspace();
     const events: CodexClientEvent[] = [];
@@ -344,19 +375,23 @@ function createClient(
     dynamicTools: NonNullable<
       ConstructorParameters<typeof CodexAppServerClient>[0]["dynamicTools"]
     >;
+    environment: NodeJS.ProcessEnv;
   }>,
 ): CodexAppServerClient {
   return new CodexAppServerClient({
-    command: `${process.execPath} "${fixturePath}" ${scenario}`,
+    command: `"${toBashPath(process.execPath)}" "${toBashPath(fixturePath)}" ${scenario}`,
     cwd: workspace,
     approvalPolicy: "full-auto",
     threadSandbox: "workspace-write",
     turnSandboxPolicy: {
       type: "workspace-write",
     },
-    readTimeoutMs: overrides?.readTimeoutMs ?? 750,
+    readTimeoutMs: overrides?.readTimeoutMs ?? 2_000,
     turnTimeoutMs: overrides?.turnTimeoutMs ?? 500,
     stallTimeoutMs: overrides?.stallTimeoutMs ?? 1_000,
+    ...(overrides?.environment === undefined
+      ? {}
+      : { environment: overrides.environment }),
     ...(overrides?.dynamicTools === undefined
       ? {}
       : { dynamicTools: overrides.dynamicTools }),
@@ -364,6 +399,10 @@ function createClient(
       events.push(event);
     },
   });
+}
+
+function toBashPath(value: string): string {
+  return value.replaceAll("\\", "/");
 }
 
 function jsonResponse(body: unknown, status = 200): Response {

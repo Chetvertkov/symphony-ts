@@ -1,4 +1,6 @@
 export * from "./agent/prompt-builder.js";
+export * from "./agent/github-capability.js";
+export * from "./agent/github-credential.js";
 export * from "./agent/runner.js";
 export * from "./cli/main.js";
 export * from "./config/defaults.js";

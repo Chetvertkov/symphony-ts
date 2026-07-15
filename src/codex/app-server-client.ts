@@ -73,6 +73,7 @@ export interface CodexAppServerClientOptions {
   readTimeoutMs: number;
   turnTimeoutMs: number;
   stallTimeoutMs: number;
+  environment?: NodeJS.ProcessEnv;
   clientInfo?: {
     name: string;
     version: string;
@@ -87,6 +88,20 @@ export interface CodexAppServerClientOptions {
 export interface CodexStartSessionInput {
   prompt: string;
   title: string;
+}
+
+export interface CodexCommandExecInput {
+  command: string[];
+  cwd: string;
+  timeoutMs: number;
+  outputBytesCap?: number;
+  sandboxPolicy: unknown;
+}
+
+export interface CodexCommandExecResult {
+  exitCode: number;
+  stdout: string;
+  stderr: string;
 }
 
 export interface CodexTurnResult {
@@ -140,13 +155,16 @@ export class CodexAppServerClient {
   private startPromise: Promise<void> | null = null;
   private stderrBuffer = "";
   private closed = false;
+  private initialized = false;
+  private dynamicTools: CodexDynamicTool[];
 
   constructor(options: CodexAppServerClientOptions) {
     this.options = options;
+    this.dynamicTools = [...(options.dynamicTools ?? [])];
   }
 
   async startSession(input: CodexStartSessionInput): Promise<CodexTurnResult> {
-    await this.ensureStarted();
+    await this.ensureThreadStarted();
 
     const threadId = this.threadId;
     if (threadId === null) {
@@ -164,7 +182,7 @@ export class CodexAppServerClient {
   }
 
   async continueTurn(prompt: string, title: string): Promise<CodexTurnResult> {
-    await this.ensureStarted();
+    await this.ensureThreadStarted();
 
     const threadId = this.threadId;
     if (threadId === null) {
@@ -179,6 +197,58 @@ export class CodexAppServerClient {
       prompt,
       title,
     });
+  }
+
+  configureDynamicTools(dynamicTools: CodexDynamicTool[]): void {
+    if (this.threadId !== null) {
+      throw new CodexAppServerClientError(
+        "Cannot configure dynamic tools after thread/start.",
+        ERROR_CODES.codexProtocolError,
+      );
+    }
+
+    this.dynamicTools = [...dynamicTools];
+  }
+
+  async execCommand(
+    input: CodexCommandExecInput,
+  ): Promise<CodexCommandExecResult> {
+    await this.ensureInitialized();
+
+    const response = await this.request(
+      "command/exec",
+      {
+        command: [...input.command],
+        cwd: input.cwd,
+        timeoutMs: input.timeoutMs,
+        ...(input.outputBytesCap === undefined
+          ? {}
+          : { outputBytesCap: input.outputBytesCap }),
+        sandboxPolicy: input.sandboxPolicy,
+      },
+      Math.max(
+        this.options.readTimeoutMs,
+        input.timeoutMs + this.options.readTimeoutMs,
+      ),
+    );
+
+    const result = extractNestedObject(response, ["result"]);
+    const exitCode = result?.exitCode;
+    const stdout = result?.stdout;
+    const stderr = result?.stderr;
+    if (
+      typeof exitCode !== "number" ||
+      !Number.isInteger(exitCode) ||
+      typeof stdout !== "string" ||
+      typeof stderr !== "string"
+    ) {
+      throw new CodexAppServerClientError(
+        "command/exec returned an invalid response.",
+        ERROR_CODES.codexProtocolError,
+      );
+    }
+
+    return { exitCode, stdout, stderr };
   }
 
   async close(): Promise<void> {
@@ -202,6 +272,8 @@ export class CodexAppServerClient {
 
     const child = this.child;
     this.child = null;
+    this.initialized = false;
+    this.threadId = null;
     if (child === null) {
       return;
     }
@@ -217,8 +289,8 @@ export class CodexAppServerClient {
     });
   }
 
-  private async ensureStarted(): Promise<void> {
-    if (this.child !== null) {
+  private async ensureInitialized(): Promise<void> {
+    if (this.child !== null && this.initialized) {
       return;
     }
 
@@ -235,10 +307,20 @@ export class CodexAppServerClient {
     }
   }
 
+  private async ensureThreadStarted(): Promise<void> {
+    await this.ensureInitialized();
+    if (this.threadId !== null) {
+      return;
+    }
+
+    await this.startThread();
+  }
+
   private async spawnAndInitialize(): Promise<void> {
     try {
       this.child = spawn("bash", ["-lc", this.options.command], {
         cwd: this.options.cwd,
+        env: this.options.environment,
         stdio: "pipe",
       });
     } catch (error) {
@@ -299,6 +381,7 @@ export class CodexAppServerClient {
         });
       }
       this.child = null;
+      this.initialized = false;
     });
 
     try {
@@ -313,27 +396,7 @@ export class CodexAppServerClient {
         method: "initialized",
         params: {},
       });
-
-      const threadResult = await this.request("thread/start", {
-        approvalPolicy: this.options.approvalPolicy,
-        sandbox: this.options.threadSandbox,
-        cwd: this.options.cwd,
-        dynamicTools: this.getAdvertisedDynamicTools(),
-      });
-
-      const threadId = extractNestedString(threadResult, [
-        "result",
-        "thread",
-        "id",
-      ]);
-      if (threadId === null) {
-        throw new CodexAppServerClientError(
-          "thread/start did not include result.thread.id.",
-          ERROR_CODES.codexHandshakeFailed,
-        );
-      }
-
-      this.threadId = threadId;
+      this.initialized = true;
     } catch (error) {
       const wrapped =
         error instanceof CodexAppServerClientError
@@ -351,6 +414,29 @@ export class CodexAppServerClient {
       await this.close();
       throw wrapped;
     }
+  }
+
+  private async startThread(): Promise<void> {
+    const threadResult = await this.request("thread/start", {
+      approvalPolicy: this.options.approvalPolicy,
+      sandbox: this.options.threadSandbox,
+      cwd: this.options.cwd,
+      dynamicTools: this.getAdvertisedDynamicTools(),
+    });
+
+    const threadId = extractNestedString(threadResult, [
+      "result",
+      "thread",
+      "id",
+    ]);
+    if (threadId === null) {
+      throw new CodexAppServerClientError(
+        "thread/start did not include result.thread.id.",
+        ERROR_CODES.codexHandshakeFailed,
+      );
+    }
+
+    this.threadId = threadId;
   }
 
   private async startTurn(input: {
@@ -745,7 +831,11 @@ export class CodexAppServerClient {
     }, this.options.stallTimeoutMs);
   }
 
-  private request(method: string, params: JsonObject): Promise<JsonObject> {
+  private request(
+    method: string,
+    params: JsonObject,
+    timeoutMs = this.options.readTimeoutMs,
+  ): Promise<JsonObject> {
     const id = this.nextRequestId++;
 
     return new Promise<JsonObject>((resolve, reject) => {
@@ -753,11 +843,11 @@ export class CodexAppServerClient {
         this.pendingRequests.delete(String(id));
         reject(
           new CodexAppServerClientError(
-            `Timed out waiting for ${method} response after ${this.options.readTimeoutMs}ms.`,
+            `Timed out waiting for ${method} response after ${timeoutMs}ms.`,
             ERROR_CODES.codexReadTimeout,
           ),
         );
-      }, this.options.readTimeoutMs);
+      }, timeoutMs);
 
       this.pendingRequests.set(String(id), {
         method,
@@ -818,7 +908,7 @@ export class CodexAppServerClient {
       });
     }
 
-    for (const tool of this.options.dynamicTools ?? []) {
+    for (const tool of this.dynamicTools) {
       advertised.set(dynamicToolKey(tool.name, tool.namespace ?? null), {
         ...(tool.namespace === undefined ? {} : { namespace: tool.namespace }),
         name: tool.name,
@@ -838,7 +928,7 @@ export class CodexAppServerClient {
     namespace: string | null,
   ): CodexDynamicTool | null {
     return (
-      this.options.dynamicTools?.find(
+      this.dynamicTools.find(
         (tool) => tool.name === name && (tool.namespace ?? null) === namespace,
       ) ?? null
     );
@@ -1186,6 +1276,29 @@ function extractNestedString(
   }
 
   return typeof current === "string" && current.length > 0 ? current : null;
+}
+
+function extractNestedObject(
+  source: JsonObject,
+  path: readonly string[],
+): JsonObject | null {
+  let current: unknown = source;
+  for (const segment of path) {
+    if (
+      current === null ||
+      typeof current !== "object" ||
+      Array.isArray(current)
+    ) {
+      return null;
+    }
+    current = (current as JsonObject)[segment];
+  }
+
+  return current !== null &&
+    typeof current === "object" &&
+    !Array.isArray(current)
+    ? (current as JsonObject)
+    : null;
 }
 
 function* walkObjects(value: unknown): Generator<JsonObject> {

@@ -28,6 +28,15 @@ rl.on("line", async (line) => {
 });
 
 async function handleMessage(message) {
+  if (
+    scenario === "command-401" &&
+    (message.method === "thread/start" || message.method === "turn/start")
+  ) {
+    throw new Error(
+      "HTTP 401 preflight must stop before thread/start or turn/start",
+    );
+  }
+
   if (message.method === "initialize") {
     if (scenario === "read-timeout") {
       return;
@@ -73,6 +82,9 @@ async function handleMessage(message) {
   }
 
   if (message.method === "thread/start") {
+    if (scenario === "command-only") {
+      throw new Error("command-only scenario must not start a thread");
+    }
     assertEqual(
       realpathSync(process.cwd()),
       realpathSync(message.params.cwd),
@@ -114,6 +126,96 @@ async function handleMessage(message) {
           id: "thread-1",
         },
       },
+    });
+    return;
+  }
+
+  if (message.method === "command/exec") {
+    assertEqual(
+      realpathSync(process.cwd()),
+      realpathSync(message.params.cwd),
+      "command/exec cwd must equal app-server cwd",
+    );
+    assertEqual(
+      message.params.timeoutMs,
+      15_000,
+      "command/exec must use the bounded GitHub probe timeout",
+    );
+    if (process.platform === "win32") {
+      assertEqual(
+        Object.hasOwn(message.params, "outputBytesCap"),
+        false,
+        "Windows command/exec must use the app-server default output cap",
+      );
+    } else {
+      assertEqual(
+        message.params.outputBytesCap,
+        64 * 1024,
+        "command/exec must bound each output stream",
+      );
+    }
+    assertEqual(
+      Object.hasOwn(message.params, "env"),
+      false,
+      "command/exec must not override the inherited environment",
+    );
+    assertEqual(
+      process.env.GH_TOKEN,
+      "inherited-secret",
+      "command/exec must inherit the app-server credential environment",
+    );
+    assertEqual(
+      message.params.sandboxPolicy?.type,
+      "workspaceWrite",
+      "command/exec must use the prepared turn sandbox policy",
+    );
+    assertEqual(
+      message.params.sandboxPolicy?.writableRoots?.includes(message.params.cwd),
+      true,
+      "command/exec sandbox must include the workspace root",
+    );
+
+    if (scenario === "command-401") {
+      writeJson({
+        id: message.id,
+        result: {
+          exitCode: 1,
+          stdout: "",
+          stderr: "gh: HTTP 401: Bad credentials (secret was redacted)",
+        },
+      });
+      return;
+    }
+
+    const command = message.params.command;
+    let stdout = "";
+    if (
+      command?.[0] === "gh" &&
+      command?.[1] === "api" &&
+      command?.[2] === "user"
+    ) {
+      stdout = "octocat\n";
+    } else if (
+      command?.[0] === "gh" &&
+      command?.[1] === "repo" &&
+      command?.[2] === "view"
+    ) {
+      stdout = "example/project\n";
+    } else if (
+      command?.[0] === "gh" &&
+      command?.[1] === "api" &&
+      command?.[2] === "repos/example/project"
+    ) {
+      stdout = "true\n";
+    } else {
+      throw new Error(
+        `unexpected command/exec argv: ${JSON.stringify(command)}`,
+      );
+    }
+
+    writeJson({
+      id: message.id,
+      result: { exitCode: 0, stdout, stderr: "" },
     });
     return;
   }

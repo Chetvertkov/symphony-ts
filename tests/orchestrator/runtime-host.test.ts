@@ -1,11 +1,16 @@
+import { join, resolve } from "node:path";
+
 import { describe, expect, it, vi } from "vitest";
 
-import type {
-  AgentRunResult,
-  AgentRunnerEvent,
+import { GithubCapabilityError } from "../../src/agent/github-capability.js";
+import {
+  type AgentRunResult,
+  AgentRunner,
+  type AgentRunnerEvent,
 } from "../../src/agent/runner.js";
 import type { ResolvedWorkflowConfig } from "../../src/config/types.js";
 import type { Issue } from "../../src/domain/model.js";
+import { ERROR_CODES } from "../../src/errors/codes.js";
 import {
   type StructuredLogEntry,
   StructuredLogger,
@@ -226,7 +231,7 @@ describe("OrchestratorRuntimeHost", () => {
     expect(details).toMatchObject({
       issue_identifier: "RENAMED-2",
       workspace: {
-        path: "/tmp/workspaces/1",
+        path: resolve("/tmp/workspaces/1"),
       },
     });
   });
@@ -279,6 +284,106 @@ describe("OrchestratorRuntimeHost", () => {
         session_id: "thread-1-turn-1",
       }),
     );
+  });
+
+  it("surfaces a deterministic GitHub capability failure and schedules no automatic retry", async () => {
+    const tracker = createTracker();
+    const config = createConfig();
+    config.capabilities.github.required = true;
+    config.workspace.root = join(process.cwd(), ".test-workspaces");
+    const workspacePath = join(config.workspace.root, "1");
+    const hooks = {
+      run: vi.fn().mockResolvedValue(true),
+      runBestEffort: vi.fn(),
+    };
+    const workspaceManager = {
+      createForIssue: vi.fn().mockResolvedValue({
+        path: workspacePath,
+        workspaceKey: "1",
+        createdNow: true,
+      }),
+    };
+    const startSession = vi.fn();
+    const createCodexClient = vi.fn(() => ({
+      execCommand: vi.fn(),
+      configureDynamicTools: vi.fn(),
+      startSession,
+      continueTurn: vi.fn(),
+      close: vi.fn().mockResolvedValue(undefined),
+    }));
+    const runner = new AgentRunner({
+      config,
+      tracker,
+      workspaceManager: workspaceManager as never,
+      hooks: hooks as never,
+      githubCapabilityProbe: {
+        probe: vi.fn().mockRejectedValue(
+          new GithubCapabilityError({
+            code: ERROR_CODES.githubAuthInvalid,
+            message:
+              "Required GitHub capability failed: gh authentication is invalid or expired.",
+            deterministic: true,
+          }),
+        ),
+      },
+      createCodexClient,
+    });
+    const entries: StructuredLogEntry[] = [];
+    const host = new OrchestratorRuntimeHost({
+      config,
+      tracker,
+      agentRunner: runner,
+      logger: new StructuredLogger([
+        {
+          write(entry) {
+            entries.push(entry);
+          },
+        },
+      ]),
+      now: () => new Date("2026-03-06T00:00:05.000Z"),
+    });
+
+    await host.pollOnce();
+    await host.waitForIdle();
+
+    expect(hooks.run).toHaveBeenCalledWith({
+      name: "beforeRun",
+      workspacePath,
+    });
+    expect(createCodexClient).toHaveBeenCalledTimes(1);
+    expect(startSession).not.toHaveBeenCalled();
+    expect(host.getState().operatorHolds["1"]).toMatchObject({
+      error: expect.stringContaining(ERROR_CODES.githubAuthInvalid),
+    });
+    expect(host.getState().retryAttempts["1"]).toBeUndefined();
+    expect(entries).toContainEqual(
+      expect.objectContaining({
+        event: "worker_exit_abnormal",
+        error_code: ERROR_CODES.githubAuthInvalid,
+        capability: "github",
+        reason:
+          "Required GitHub capability failed: gh authentication is invalid or expired.",
+      }),
+    );
+
+    await host.pollOnce();
+    await host.waitForIdle();
+    expect(createCodexClient).toHaveBeenCalledTimes(1);
+
+    await expect(host.requestOperatorRetry("ISSUE-1")).resolves.toEqual({
+      issue_id: "1",
+      issue_identifier: "ISSUE-1",
+      dispatched: true,
+      released: false,
+    });
+    await host.waitForIdle();
+
+    expect(createCodexClient).toHaveBeenCalledTimes(2);
+    expect(startSession).not.toHaveBeenCalled();
+    expect(host.getState().operatorHolds["1"]).toMatchObject({
+      error: expect.stringContaining(ERROR_CODES.githubAuthInvalid),
+    });
+    expect(host.getState().retryAttempts["1"]).toBeUndefined();
   });
 });
 
@@ -429,6 +534,12 @@ function createConfig(): ResolvedWorkflowConfig {
       turnTimeoutMs: 120_000,
       readTimeoutMs: 5_000,
       stallTimeoutMs: 60_000,
+    },
+    capabilities: {
+      github: {
+        required: false,
+        credentialSource: "environment",
+      },
     },
     server: {
       port: null,

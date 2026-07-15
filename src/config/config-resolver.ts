@@ -11,6 +11,8 @@ import {
 import {
   DEFAULT_ACTIVE_STATES,
   DEFAULT_CODEX_COMMAND,
+  DEFAULT_GITHUB_CAPABILITY_REQUIRED,
+  DEFAULT_GITHUB_CREDENTIAL_SOURCE,
   DEFAULT_HOOK_TIMEOUT_MS,
   DEFAULT_LINEAR_ENDPOINT,
   DEFAULT_LINEAR_NETWORK_TIMEOUT_MS,
@@ -37,6 +39,7 @@ import {
 } from "./defaults.js";
 import type {
   DispatchValidationResult,
+  GithubCredentialSource,
   ResolvedWorkflowConfig,
 } from "./types.js";
 
@@ -64,6 +67,8 @@ export function resolveWorkflowConfig(
   const hooks = asRecord(config.hooks);
   const agent = asRecord(config.agent);
   const codex = asRecord(config.codex);
+  const capabilities = asRecord(config.capabilities);
+  const githubCapability = asRecord(capabilities.github);
   const server = asRecord(config.server);
   const observability = asRecord(config.observability);
   const trackerKind = readString(tracker.kind) ?? DEFAULT_TRACKER_KIND;
@@ -145,6 +150,16 @@ export function resolveWorkflowConfig(
         readPositiveInteger(codex.read_timeout_ms) ?? DEFAULT_READ_TIMEOUT_MS,
       stallTimeoutMs:
         readInteger(codex.stall_timeout_ms) ?? DEFAULT_STALL_TIMEOUT_MS,
+    },
+    capabilities: {
+      github: {
+        required:
+          readBoolean(githubCapability.required) ??
+          DEFAULT_GITHUB_CAPABILITY_REQUIRED,
+        credentialSource: readGithubCredentialSource(
+          githubCapability.credential_source,
+        ),
+      },
     },
     server: {
       port: readNonNegativeInteger(server.port),
@@ -270,6 +285,17 @@ function readBoolean(value: unknown): boolean | null {
   }
 
   return null;
+}
+
+function readGithubCredentialSource(value: unknown): GithubCredentialSource {
+  if (typeof value !== "string") {
+    return DEFAULT_GITHUB_CREDENTIAL_SOURCE;
+  }
+
+  const normalized = value.trim().toLowerCase();
+  return normalized === "gh_auth_token"
+    ? "gh_auth_token"
+    : DEFAULT_GITHUB_CREDENTIAL_SOURCE;
 }
 
 function readPositiveInteger(value: unknown): number | null {

@@ -30,14 +30,24 @@ export interface RuntimeSnapshotRetryRow {
   error: string | null;
 }
 
+export interface RuntimeSnapshotHoldRow {
+  issue_id: string;
+  issue_identifier: string | null;
+  attempt: number;
+  held_at: string;
+  error: string;
+}
+
 export interface RuntimeSnapshot {
   generated_at: string;
   counts: {
     running: number;
     retrying: number;
+    held: number;
   };
   running: RuntimeSnapshotRunningRow[];
   retrying: RuntimeSnapshotRetryRow[];
+  holds: RuntimeSnapshotHoldRow[];
   codex_totals: {
     input_tokens: number;
     output_tokens: number;
@@ -88,14 +98,27 @@ export function buildRuntimeSnapshot(
       error: entry.error,
     }));
 
+  const holds = Object.values(state.operatorHolds)
+    .slice()
+    .sort((left, right) => left.heldAtMs - right.heldAtMs)
+    .map((entry) => ({
+      issue_id: entry.issueId,
+      issue_identifier: entry.identifier,
+      attempt: entry.attempt,
+      held_at: new Date(entry.heldAtMs).toISOString(),
+      error: entry.error,
+    }));
+
   return {
     generated_at: now.toISOString(),
     counts: {
       running: running.length,
       retrying: retrying.length,
+      held: holds.length,
     },
     running,
     retrying,
+    holds,
     codex_totals: toSnapshotCodexTotals(
       state.codexTotals,
       getAggregateSecondsRunning(state, now),

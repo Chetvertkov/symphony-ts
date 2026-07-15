@@ -45,6 +45,15 @@ export interface WorkflowCodexConfig {
   stallTimeoutMs: number;
 }
 
+export interface WorkflowCapabilitiesConfig {
+  github: {
+    required: boolean;
+    credentialSource: GithubCredentialSource;
+  };
+}
+
+export type GithubCredentialSource = "environment" | "gh_auth_token";
+
 export interface WorkflowServerConfig {
   port: number | null;
 }
@@ -64,6 +73,7 @@ export interface ResolvedWorkflowConfig {
   hooks: WorkflowHooksConfig;
   agent: WorkflowAgentConfig;
   codex: WorkflowCodexConfig;
+  capabilities: WorkflowCapabilitiesConfig;
   server: WorkflowServerConfig;
   observability: WorkflowObservabilityConfig;
 }

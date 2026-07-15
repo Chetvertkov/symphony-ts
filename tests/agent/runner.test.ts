@@ -199,6 +199,205 @@ describe("AgentRunner", () => {
     });
   });
 
+  it("preserves existing startup behavior when the GitHub capability is not required", async () => {
+    const root = await createRoot();
+    const probe = {
+      probe: vi.fn().mockRejectedValue(new Error("must not run")),
+    };
+    const startSession = vi.fn(async () => completedTurn());
+    const runner = new AgentRunner({
+      config: createConfig(root, "unused"),
+      tracker: createTracker({
+        refreshStates: [
+          { id: "issue-1", identifier: "ABC-123", state: "Done" },
+        ],
+      }),
+      githubCapabilityProbe: probe,
+      createCodexClient: (input) =>
+        createStubCodexClient([], input, { startSession }),
+    });
+
+    await runner.run({ issue: ISSUE_FIXTURE, attempt: null });
+
+    expect(probe.probe).not.toHaveBeenCalled();
+    expect(startSession).toHaveBeenCalledTimes(1);
+  });
+
+  it("allows turn/start after the same app-server command/exec GitHub probe succeeds", async () => {
+    const root = await createRoot();
+    const config = createConfig(root, "command-success");
+    config.capabilities.github.required = true;
+    const runner = new AgentRunner({
+      config,
+      tracker: createTracker({
+        refreshStates: [
+          { id: "issue-1", identifier: "ABC-123", state: "Done" },
+        ],
+      }),
+      environment: {
+        ...process.env,
+        GH_TOKEN: "inherited-secret",
+      },
+    });
+
+    const result = await runner.run({ issue: ISSUE_FIXTURE, attempt: null });
+
+    expect(result.turnsCompleted).toBe(1);
+    expect(result.lastTurn?.status).toBe("completed");
+  });
+
+  it("bridges the current gh auth token into the worker environment only when opted in", async () => {
+    const root = await createRoot();
+    const config = createConfig(root, "unused");
+    config.capabilities.github.required = true;
+    config.capabilities.github.credentialSource = "gh_auth_token";
+    const environment: NodeJS.ProcessEnv = {
+      PATH: "C:\\tools",
+      GH_TOKEN: "  ",
+      GITHUB_TOKEN: "",
+    };
+    const getToken = vi.fn().mockResolvedValue("keyring-secret");
+    const probe = {
+      probe: vi.fn().mockResolvedValue({
+        identity: "octocat",
+        repository: "example/project",
+        canPush: true as const,
+      }),
+    };
+    const createCodexClient = vi.fn((input) =>
+      createStubCodexClient([], input, {
+        statuses: ["completed"],
+      }),
+    );
+    const runner = new AgentRunner({
+      config,
+      tracker: createTracker({
+        refreshStates: [
+          { id: "issue-1", identifier: "ABC-123", state: "Done" },
+        ],
+      }),
+      environment,
+      githubCredentialProvider: { getToken },
+      githubCapabilityProbe: probe,
+      createCodexClient,
+    });
+
+    await runner.run({ issue: ISSUE_FIXTURE, attempt: null });
+
+    expect(getToken).toHaveBeenCalledWith({
+      environment: {
+        PATH: "C:\\tools",
+      },
+    });
+    expect(environment).toEqual({
+      PATH: "C:\\tools",
+      GH_TOKEN: "  ",
+      GITHUB_TOKEN: "",
+    });
+    expect(createCodexClient).toHaveBeenCalledTimes(1);
+    expect(createCodexClient.mock.calls[0]?.[0].environment).toEqual({
+      PATH: "C:\\tools",
+      GH_TOKEN: "keyring-secret",
+    });
+    expect(probe.probe).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(["GH_TOKEN", "GITHUB_TOKEN"] as const)(
+    "preserves an explicit %s instead of reading the gh keyring",
+    async (variable) => {
+      const root = await createRoot();
+      const config = createConfig(root, "unused");
+      config.capabilities.github.required = true;
+      config.capabilities.github.credentialSource = "gh_auth_token";
+      const getToken = vi
+        .fn()
+        .mockRejectedValue(new Error("must not read the keyring"));
+      const createCodexClient = vi.fn((input) =>
+        createStubCodexClient([], input, {
+          statuses: ["completed"],
+        }),
+      );
+      const runner = new AgentRunner({
+        config,
+        tracker: createTracker({
+          refreshStates: [
+            { id: "issue-1", identifier: "ABC-123", state: "Done" },
+          ],
+        }),
+        environment: {
+          PATH: "C:\\tools",
+          [variable]: "explicit-secret",
+        },
+        githubCredentialProvider: { getToken },
+        githubCapabilityProbe: {
+          probe: vi.fn().mockResolvedValue({
+            identity: "octocat",
+            repository: "example/project",
+            canPush: true as const,
+          }),
+        },
+        createCodexClient,
+      });
+
+      await runner.run({ issue: ISSUE_FIXTURE, attempt: null });
+
+      expect(getToken).not.toHaveBeenCalled();
+      expect(createCodexClient.mock.calls[0]?.[0].environment).toMatchObject({
+        [variable]: "explicit-secret",
+      });
+      expect(
+        createCodexClient.mock.calls[0]?.[0].environment,
+      ).not.toHaveProperty(
+        variable === "GH_TOKEN" ? "GITHUB_TOKEN" : "GH_TOKEN",
+      );
+    },
+  );
+
+  it("stops after a successful before_run when the effective GitHub probe returns HTTP 401", async () => {
+    const root = await createRoot();
+    const config = createConfig(root, "command-401");
+    config.capabilities.github.required = true;
+    config.capabilities.github.credentialSource = "gh_auth_token";
+    const getToken = vi
+      .fn()
+      .mockRejectedValue(new Error("must not replace an explicit token"));
+    const hooks = {
+      run: vi.fn().mockResolvedValue(true),
+      runBestEffort: vi.fn(),
+    };
+    const tracker = {
+      ...createTracker(),
+      claimIssue: vi.fn(),
+      handoffIssue: vi.fn(),
+    };
+    const runner = new AgentRunner({
+      config,
+      tracker,
+      hooks: hooks as never,
+      environment: {
+        ...process.env,
+        GH_TOKEN: "inherited-secret",
+      },
+      githubCredentialProvider: { getToken },
+    });
+
+    await expect(
+      runner.run({ issue: ISSUE_FIXTURE, attempt: null }),
+    ).rejects.toMatchObject({
+      code: ERROR_CODES.githubAuthInvalid,
+      capability: "github",
+      failedPhase: "validating_capabilities",
+    } satisfies Partial<AgentRunnerError>);
+
+    expect(hooks.run).toHaveBeenCalledWith({
+      name: "beforeRun",
+      workspacePath: join(root, "issue-1"),
+    });
+    expect(tracker.claimIssue).not.toHaveBeenCalled();
+    expect(getToken).not.toHaveBeenCalled();
+    expect(hooks.runBestEffort).toHaveBeenCalledTimes(1);
+  });
+
   it("claims write-capable tracker issues before creating a Codex client", async () => {
     const root = await createRoot();
     const createCodexClient = vi.fn((input) =>
@@ -817,6 +1016,8 @@ function createStubCodexClient(
   input: AgentRunnerCodexClientFactoryInput,
   overrides?: Partial<{
     close: ReturnType<typeof vi.fn>;
+    execCommand: ReturnType<typeof vi.fn>;
+    configureDynamicTools: ReturnType<typeof vi.fn>;
     statuses: Array<"completed" | "failed" | "cancelled">;
     startSession: (input: { prompt: string; title: string }) => Promise<{
       status: "completed" | "failed" | "cancelled";
@@ -837,6 +1038,10 @@ function createStubCodexClient(
   const statuses = overrides?.statuses ?? ["completed"];
 
   return {
+    execCommand:
+      overrides?.execCommand ??
+      vi.fn().mockResolvedValue({ exitCode: 0, stdout: "", stderr: "" }),
+    configureDynamicTools: overrides?.configureDynamicTools ?? vi.fn(),
     async startSession({ prompt, title }: { prompt: string; title: string }) {
       if (overrides?.startSession) {
         return overrides.startSession({ prompt, title });
@@ -899,6 +1104,18 @@ function createStubCodexClient(
   };
 }
 
+function completedTurn() {
+  return {
+    status: "completed" as const,
+    threadId: "thread-1",
+    turnId: "turn-1",
+    sessionId: "thread-1-turn-1",
+    usage: null,
+    rateLimits: null,
+    message: null,
+  };
+}
+
 function createTracker(input?: {
   refreshStates?: IssueStateSnapshot[];
 }): IssueTracker {
@@ -952,15 +1169,21 @@ function createConfig(root: string, scenario: string): ResolvedWorkflowConfig {
       maxConcurrentAgentsByState: {},
     },
     codex: {
-      command: `${process.execPath} "${fixturePath}" ${scenario}`,
+      command: `"${toBashPath(process.execPath)}" "${toBashPath(fixturePath)}" ${scenario}`,
       approvalPolicy: "full-auto",
       threadSandbox: "workspace-write",
       turnSandboxPolicy: {
         type: "workspace-write",
       },
       turnTimeoutMs: 1_000,
-      readTimeoutMs: 1_000,
+      readTimeoutMs: 3_000,
       stallTimeoutMs: 2_000,
+    },
+    capabilities: {
+      github: {
+        required: false,
+        credentialSource: "environment",
+      },
     },
     server: {
       port: null,
@@ -971,6 +1194,10 @@ function createConfig(root: string, scenario: string): ResolvedWorkflowConfig {
       renderIntervalMs: 16,
     },
   };
+}
+
+function toBashPath(value: string): string {
+  return value.replaceAll("\\", "/");
 }
 
 async function createRoot(): Promise<string> {

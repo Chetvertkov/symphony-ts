@@ -114,6 +114,12 @@ function createLinearConfig(
       readTimeoutMs: 5_000,
       stallTimeoutMs: 300_000,
     },
+    capabilities: {
+      github: {
+        required: false,
+        credentialSource: "environment",
+      },
+    },
     server: {
       port: null,
     },

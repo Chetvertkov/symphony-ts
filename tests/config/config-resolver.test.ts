@@ -1,5 +1,5 @@
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 
 import { describe, expect, it } from "vitest";
 
@@ -9,6 +9,8 @@ import {
 } from "../../src/config/config-resolver.js";
 import {
   DEFAULT_CODEX_COMMAND,
+  DEFAULT_GITHUB_CAPABILITY_REQUIRED,
+  DEFAULT_GITHUB_CREDENTIAL_SOURCE,
   DEFAULT_HOOK_TIMEOUT_MS,
   DEFAULT_MAX_CONCURRENT_AGENTS,
   DEFAULT_MAX_RETRY_BACKOFF_MS,
@@ -68,6 +70,12 @@ describe("config-resolver", () => {
     expect(resolved.codex.turnTimeoutMs).toBe(DEFAULT_TURN_TIMEOUT_MS);
     expect(resolved.codex.readTimeoutMs).toBe(DEFAULT_READ_TIMEOUT_MS);
     expect(resolved.codex.stallTimeoutMs).toBe(DEFAULT_STALL_TIMEOUT_MS);
+    expect(resolved.capabilities.github.required).toBe(
+      DEFAULT_GITHUB_CAPABILITY_REQUIRED,
+    );
+    expect(resolved.capabilities.github.credentialSource).toBe(
+      DEFAULT_GITHUB_CREDENTIAL_SOURCE,
+    );
     expect(resolved.observability.dashboardEnabled).toBe(
       DEFAULT_OBSERVABILITY_ENABLED,
     );
@@ -120,6 +128,12 @@ describe("config-resolver", () => {
             read_timeout_ms: "2500",
             stall_timeout_ms: "-1",
           },
+          capabilities: {
+            github: {
+              required: "true",
+              credential_source: "gh_auth_token",
+            },
+          },
           server: {
             port: "8080",
           },
@@ -150,7 +164,7 @@ describe("config-resolver", () => {
     expect(resolved.tracker.blockedState).toBe("Needs decision");
     expect(resolved.tracker.requireClaimBeforeAgent).toBe(false);
     expect(resolved.polling.intervalMs).toBe(15_000);
-    expect(resolved.workspace.root).toBe(join("/repo", "tmp/workspaces"));
+    expect(resolved.workspace.root).toBe(resolve("/repo/tmp/workspaces"));
     expect(resolved.hooks.beforeRun).toBe("pnpm test");
     expect(resolved.hooks.timeoutMs).toBe(DEFAULT_HOOK_TIMEOUT_MS);
     expect(resolved.agent.maxConcurrentAgents).toBe(4);
@@ -163,6 +177,8 @@ describe("config-resolver", () => {
     expect(resolved.codex.turnTimeoutMs).toBe(90_000);
     expect(resolved.codex.readTimeoutMs).toBe(2_500);
     expect(resolved.codex.stallTimeoutMs).toBe(-1);
+    expect(resolved.capabilities.github.required).toBe(true);
+    expect(resolved.capabilities.github.credentialSource).toBe("gh_auth_token");
     expect(resolved.server.port).toBe(8080);
     expect(resolved.observability.dashboardEnabled).toBe(false);
     expect(resolved.observability.refreshMs).toBe(2_500);
@@ -181,6 +197,41 @@ describe("config-resolver", () => {
     });
 
     expect(resolved.server.port).toBe(0);
+  });
+
+  it("resolves the opt-in GitHub capability and credential source settings", () => {
+    const resolved = resolveWorkflowConfig({
+      workflowPath: "/repo/WORKFLOW.md",
+      promptTemplate: "Prompt",
+      config: {
+        capabilities: {
+          github: {
+            required: true,
+            credential_source: "gh_auth_token",
+          },
+        },
+      },
+    });
+
+    expect(resolved.capabilities.github.required).toBe(true);
+    expect(resolved.capabilities.github.credentialSource).toBe("gh_auth_token");
+  });
+
+  it("falls back to environment credentials for unknown GitHub credential sources", () => {
+    const resolved = resolveWorkflowConfig({
+      workflowPath: "/repo/WORKFLOW.md",
+      promptTemplate: "Prompt",
+      config: {
+        capabilities: {
+          github: {
+            required: true,
+            credential_source: "write-token-to-disk",
+          },
+        },
+      },
+    });
+
+    expect(resolved.capabilities.github.credentialSource).toBe("environment");
   });
 
   it("ignores invalid negative or non-integer server.port values", () => {

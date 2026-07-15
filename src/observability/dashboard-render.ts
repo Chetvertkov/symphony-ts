@@ -426,6 +426,12 @@ ${DASHBOARD_STYLES}
           </article>
 
           <article class="metric-card">
+            <p class="metric-label">Operator holds</p>
+            <p id="metric-held" class="metric-value numeric">${snapshot.counts.held}</p>
+            <p class="metric-detail">Timerless failures awaiting an explicit retry.</p>
+          </article>
+
+          <article class="metric-card">
             <p class="metric-label">Total tokens</p>
             <p id="metric-total" class="metric-value numeric">${totalTokensLabel}</p>
             <p id="metric-total-detail" class="metric-detail numeric">In ${inputTokensLabel} / Out ${outputTokensLabel}</p>
@@ -478,6 +484,29 @@ ${DASHBOARD_STYLES}
                 </tr>
               </thead>
               <tbody id="running-rows">${renderRunningRows(snapshot)}</tbody>
+            </table>
+          </div>
+        </section>
+
+        <section class="section-card">
+          <div class="section-header">
+            <div>
+              <h2 class="section-title">Operator holds</h2>
+              <p class="section-copy">Timerless failures that require an explicit selected-issue retry.</p>
+            </div>
+          </div>
+
+          <div class="table-wrap">
+            <table class="data-table" style="min-width: 680px;">
+              <thead>
+                <tr>
+                  <th>Issue</th>
+                  <th>Attempt</th>
+                  <th>Held at</th>
+                  <th>Error</th>
+                </tr>
+              </thead>
+              <tbody id="hold-rows">${renderHoldRows(snapshot)}</tbody>
             </table>
           </div>
         </section>
@@ -636,6 +665,21 @@ function renderDashboardClientScript(
           }).join('');
         }
 
+        function renderHoldRows(next) {
+          if (!next.holds || next.holds.length === 0) {
+            return '<tr><td colspan="4"><p class="empty-state">No issues are on operator hold.</p></td></tr>';
+          }
+
+          return next.holds.map(function (row) {
+            return '<tr>' +
+              '<td><div class="issue-stack"><span class="issue-id">' + escapeHtml(row.issue_identifier || row.issue_id) + '</span><a class="issue-link" href="/api/v1/' + encodeURIComponent(row.issue_identifier || row.issue_id) + '">JSON details</a></div></td>' +
+              '<td>' + escapeHtml(row.attempt) + '</td>' +
+              '<td class="mono">' + escapeHtml(row.held_at || 'n/a') + '</td>' +
+              '<td>' + escapeHtml(row.error || 'n/a') + '</td>' +
+              '</tr>';
+          }).join('');
+        }
+
         function setStatus(text, live) {
           const element = document.getElementById('live-status');
           if (!element) return;
@@ -650,11 +694,13 @@ function renderDashboardClientScript(
           document.getElementById('generated-at').textContent = 'Generated at ' + next.generated_at;
           document.getElementById('metric-running').textContent = String(next.counts.running);
           document.getElementById('metric-retrying').textContent = String(next.counts.retrying);
+          document.getElementById('metric-held').textContent = String(next.counts.held);
           document.getElementById('metric-total').textContent = formatInteger(next.codex_totals.total_tokens);
           document.getElementById('metric-total-detail').textContent = 'In ' + formatInteger(next.codex_totals.input_tokens) + ' / Out ' + formatInteger(next.codex_totals.output_tokens);
           document.getElementById('metric-runtime').textContent = formatRuntimeSeconds(next.codex_totals.seconds_running);
           document.getElementById('running-rows').innerHTML = renderRunningRows(next);
           document.getElementById('retry-rows').innerHTML = renderRetryRows(next);
+          document.getElementById('hold-rows').innerHTML = renderHoldRows(next);
           document.getElementById('rate-limits').textContent = prettyValue(next.rate_limits);
         }
 
@@ -765,6 +811,29 @@ function renderRetryRows(snapshot: RuntimeSnapshot): string {
               <td>${row.attempt}</td>
               <td class="mono">${escapeHtml(row.due_at)}</td>
               <td>${escapeHtml(row.error ?? "n/a")}</td>
+            </tr>`,
+        )
+        .join("");
+}
+
+function renderHoldRows(snapshot: RuntimeSnapshot): string {
+  return snapshot.holds.length === 0
+    ? '<tr><td colspan="4"><p class="empty-state">No issues are on operator hold.</p></td></tr>'
+    : snapshot.holds
+        .map(
+          (row) => `
+            <tr>
+              <td>
+                <div class="issue-stack">
+                  <span class="issue-id">${escapeHtml(row.issue_identifier ?? row.issue_id)}</span>
+                  <a class="issue-link" href="/api/v1/${encodeURIComponent(
+                    row.issue_identifier ?? row.issue_id,
+                  )}">JSON details</a>
+                </div>
+              </td>
+              <td>${row.attempt}</td>
+              <td class="mono">${escapeHtml(row.held_at)}</td>
+              <td>${escapeHtml(row.error)}</td>
             </tr>`,
         )
         .join("");

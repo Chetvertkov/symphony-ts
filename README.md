@@ -180,6 +180,11 @@ If a specific external CLI still does not see the credentials or executable path
 environment, provide that tool's credential via environment variables before launching Symphony and
 consider prefixing `codex.command` with an explicit `PATH=...`.
 
+For GitHub workflows, `capabilities.github.credential_source: gh_auth_token` can reuse a one-time
+`gh auth login`: when no explicit `GH_TOKEN` or `GITHUB_TOKEN` exists, Symphony reads the current
+GitHub CLI token and passes it only in memory to the worker's Codex app-server. The sandboxed GitHub
+preflight still has to prove identity, repository resolution, and push permission before a turn.
+
 For a complete reference covering every supported field with defaults and inline documentation, see
 [docs/WORKFLOW.template.md](docs/WORKFLOW.template.md).
 

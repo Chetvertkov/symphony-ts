@@ -3,6 +3,8 @@ import { rm } from "node:fs/promises";
 import {
   CodexAppServerClient,
   type CodexClientEvent,
+  type CodexCommandExecInput,
+  type CodexCommandExecResult,
   type CodexDynamicTool,
   type CodexTurnResult,
 } from "../codex/app-server-client.js";
@@ -33,6 +35,14 @@ import { WorkspaceHookRunner } from "../workspace/hooks.js";
 import { validateWorkspaceCwd } from "../workspace/path-safety.js";
 import { WorkspaceManager } from "../workspace/workspace-manager.js";
 import { createSymphonyBlockDynamicTool } from "./block-tool.js";
+import {
+  GhGithubCapabilityProbe,
+  type GithubCapabilityProbe,
+} from "./github-capability.js";
+import {
+  GhAuthTokenCredentialProvider,
+  type GithubCredentialProvider,
+} from "./github-credential.js";
 import { createSymphonyHandoffDynamicTool } from "./handoff-tool.js";
 import {
   type BuildTurnPromptInput,
@@ -53,6 +63,8 @@ export interface AgentRunnerEvent extends CodexClientEvent {
 }
 
 export interface AgentRunnerCodexClient {
+  execCommand(input: CodexCommandExecInput): Promise<CodexCommandExecResult>;
+  configureDynamicTools(dynamicTools: CodexDynamicTool[]): void;
   startSession(input: {
     prompt: string;
     title: string;
@@ -71,6 +83,7 @@ export interface AgentRunnerCodexClientFactoryInput {
   turnTimeoutMs: number;
   stallTimeoutMs: number;
   dynamicTools: CodexDynamicTool[];
+  environment: NodeJS.ProcessEnv;
   onEvent: (event: CodexClientEvent) => void;
 }
 
@@ -83,6 +96,9 @@ export interface AgentRunnerOptions {
     input: AgentRunnerCodexClientFactoryInput,
   ) => AgentRunnerCodexClient;
   fetchFn?: typeof fetch;
+  environment?: NodeJS.ProcessEnv;
+  githubCapabilityProbe?: GithubCapabilityProbe;
+  githubCredentialProvider?: GithubCredentialProvider;
   onEvent?: (event: AgentRunnerEvent) => void;
 }
 
@@ -112,6 +128,7 @@ export class AgentRunnerError extends Error {
   readonly workspace: Workspace | null;
   readonly runAttempt: RunAttempt;
   readonly liveSession: LiveSession;
+  readonly capability: string | undefined;
 
   constructor(input: {
     message: string;
@@ -122,6 +139,7 @@ export class AgentRunnerError extends Error {
     workspace: Workspace | null;
     runAttempt: RunAttempt;
     liveSession: LiveSession;
+    capability?: string;
     cause?: unknown;
   }) {
     super(input.message, { cause: input.cause });
@@ -133,6 +151,7 @@ export class AgentRunnerError extends Error {
     this.workspace = input.workspace;
     this.runAttempt = input.runAttempt;
     this.liveSession = input.liveSession;
+    this.capability = input.capability;
   }
 }
 
@@ -150,6 +169,12 @@ export class AgentRunner {
   ) => AgentRunnerCodexClient;
 
   private readonly fetchFn: typeof fetch | undefined;
+
+  private readonly environment: NodeJS.ProcessEnv;
+
+  private readonly githubCapabilityProbe: GithubCapabilityProbe;
+
+  private readonly githubCredentialProvider: GithubCredentialProvider;
 
   private readonly onEvent: ((event: AgentRunnerEvent) => void) | undefined;
 
@@ -170,6 +195,11 @@ export class AgentRunner {
     this.createCodexClient =
       options.createCodexClient ?? createDefaultCodexClient;
     this.fetchFn = options.fetchFn;
+    this.environment = options.environment ?? process.env;
+    this.githubCapabilityProbe =
+      options.githubCapabilityProbe ?? new GhGithubCapabilityProbe();
+    this.githubCredentialProvider =
+      options.githubCredentialProvider ?? new GhAuthTokenCredentialProvider();
     this.onEvent = options.onEvent;
   }
 
@@ -218,6 +248,46 @@ export class AgentRunner {
         workspacePath: workspace.path,
       });
 
+      const turnSandboxPolicy = prepareTurnSandboxPolicy(
+        this.config.codex.turnSandboxPolicy,
+        workspace.path,
+      );
+      let codexEnvironment = this.environment;
+
+      if (this.config.capabilities.github.required) {
+        runAttempt.status = "validating_capabilities";
+        codexEnvironment = await this.resolveGithubEnvironment();
+        client = this.createCodexClient({
+          command: this.config.codex.command,
+          cwd: workspace.path,
+          approvalPolicy: this.config.codex.approvalPolicy,
+          threadSandbox: this.config.codex.threadSandbox,
+          turnSandboxPolicy,
+          readTimeoutMs: this.config.codex.readTimeoutMs,
+          turnTimeoutMs: this.config.codex.turnTimeoutMs,
+          stallTimeoutMs: this.config.codex.stallTimeoutMs,
+          dynamicTools: [],
+          environment: codexEnvironment,
+          onEvent: (event) => {
+            applyCodexEventToSession(liveSession, event);
+            this.onEvent?.({
+              ...event,
+              issueId: issue.id,
+              issueIdentifier: issue.identifier,
+              attempt: input.attempt,
+              workspacePath,
+              turnCount: liveSession.turnCount,
+            });
+          },
+        });
+        abortController.bindClient(client);
+        await this.githubCapabilityProbe.probe({
+          workspacePath: workspace.path,
+          sandboxPolicy: turnSandboxPolicy,
+          executor: client,
+        });
+      }
+
       issue = await this.claimIssueBeforeAgent(issue);
       runAttempt.status = "blocking_issue";
       const preflightBlocker = await this.blockIssueBeforeAgentIfUnready(issue);
@@ -252,40 +322,43 @@ export class AgentRunner {
       }
 
       runAttempt.status = "launching_agent_process";
-      client = this.createCodexClient({
-        command: this.config.codex.command,
-        cwd: workspace.path,
-        approvalPolicy: this.config.codex.approvalPolicy,
-        threadSandbox: this.config.codex.threadSandbox,
-        turnSandboxPolicy: prepareTurnSandboxPolicy(
-          this.config.codex.turnSandboxPolicy,
-          workspace.path,
-        ),
-        readTimeoutMs: this.config.codex.readTimeoutMs,
-        turnTimeoutMs: this.config.codex.turnTimeoutMs,
-        stallTimeoutMs: this.config.codex.stallTimeoutMs,
-        dynamicTools: this.createDynamicTools(
-          issue,
-          (result) => {
-            handoffRef.current = result;
-          },
-          (result) => {
-            blockerRef.current = result;
-          },
-        ),
-        onEvent: (event) => {
-          applyCodexEventToSession(liveSession, event);
-          this.onEvent?.({
-            ...event,
-            issueId: issue.id,
-            issueIdentifier: issue.identifier,
-            attempt: input.attempt,
-            workspacePath,
-            turnCount: liveSession.turnCount,
-          });
+      const dynamicTools = this.createDynamicTools(
+        issue,
+        (result) => {
+          handoffRef.current = result;
         },
-      });
-      abortController.bindClient(client);
+        (result) => {
+          blockerRef.current = result;
+        },
+      );
+      if (client === null) {
+        client = this.createCodexClient({
+          command: this.config.codex.command,
+          cwd: workspace.path,
+          approvalPolicy: this.config.codex.approvalPolicy,
+          threadSandbox: this.config.codex.threadSandbox,
+          turnSandboxPolicy,
+          readTimeoutMs: this.config.codex.readTimeoutMs,
+          turnTimeoutMs: this.config.codex.turnTimeoutMs,
+          stallTimeoutMs: this.config.codex.stallTimeoutMs,
+          dynamicTools,
+          environment: codexEnvironment,
+          onEvent: (event) => {
+            applyCodexEventToSession(liveSession, event);
+            this.onEvent?.({
+              ...event,
+              issueId: issue.id,
+              issueIdentifier: issue.identifier,
+              attempt: input.attempt,
+              workspacePath,
+              turnCount: liveSession.turnCount,
+            });
+          },
+        });
+        abortController.bindClient(client);
+      } else {
+        client.configureDynamicTools(dynamicTools);
+      }
 
       for (
         let turnNumber = 1;
@@ -476,6 +549,29 @@ export class AgentRunner {
     return tools;
   }
 
+  private async resolveGithubEnvironment(): Promise<NodeJS.ProcessEnv> {
+    const environment = { ...this.environment };
+    if (
+      this.config.capabilities.github.credentialSource !== "gh_auth_token" ||
+      hasExplicitGithubToken(environment)
+    ) {
+      return environment;
+    }
+
+    const credentialEnvironment = Object.fromEntries(
+      Object.entries(environment).filter(
+        ([name]) => name !== "GH_TOKEN" && name !== "GITHUB_TOKEN",
+      ),
+    );
+    const token = await this.githubCredentialProvider.getToken({
+      environment: credentialEnvironment,
+    });
+    return {
+      ...credentialEnvironment,
+      GH_TOKEN: token,
+    };
+  }
+
   private async claimIssueBeforeAgent(issue: Issue): Promise<Issue> {
     if (
       !this.config.tracker.requireClaimBeforeAgent ||
@@ -617,10 +713,18 @@ export class AgentRunner {
       typeof input.error.code === "string"
         ? input.error.code
         : undefined;
+    const capability =
+      typeof input.error === "object" &&
+      input.error !== null &&
+      "capability" in input.error &&
+      typeof input.error.capability === "string"
+        ? input.error.capability
+        : undefined;
 
     return new AgentRunnerError({
       message,
       ...(code === undefined ? {} : { code }),
+      ...(capability === undefined ? {} : { capability }),
       status: classifyFailureStatus(code),
       failedPhase: input.runAttempt.status,
       issue: input.issue,
@@ -639,6 +743,12 @@ async function cleanupWorkspaceArtifacts(workspacePath: string): Promise<void> {
   });
 }
 
+function hasExplicitGithubToken(environment: NodeJS.ProcessEnv): boolean {
+  return [environment.GH_TOKEN, environment.GITHUB_TOKEN].some(
+    (value) => typeof value === "string" && value.trim().length > 0,
+  );
+}
+
 function createDefaultCodexClient(
   input: AgentRunnerCodexClientFactoryInput,
 ): AgentRunnerCodexClient {
@@ -652,6 +762,7 @@ function createDefaultCodexClient(
     turnTimeoutMs: input.turnTimeoutMs,
     stallTimeoutMs: input.stallTimeoutMs,
     dynamicTools: input.dynamicTools,
+    environment: input.environment,
     onEvent: input.onEvent,
   });
 }
