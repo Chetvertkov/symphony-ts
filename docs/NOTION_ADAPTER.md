@@ -111,6 +111,7 @@ hooks:
 
 codex:
   command: codex --config shell_environment_policy.inherit=all app-server
+  approval_policy: on-request
   turn_sandbox_policy:
     type: workspaceWrite
     writableRoots:
@@ -123,6 +124,13 @@ You are working on Notion issue {{ issue.identifier }}.
 Implement the task and run validation. When the PR is ready for review, call `symphony_handoff`
 with the PR URL, head SHA, validation summary, and residual risks.
 ```
+
+Codex keeps `.git` read-only in `workspaceWrite` even when it is listed in `writableRoots`. Keep
+`approval_policy: on-request` when the task must create branches or commits, and have the agent
+request a narrow sandbox escalation for the required Git command. The current high-trust Symphony
+client auto-approves every approval request it recognizes and does not enforce a Git-only or
+command-kind allowlist. The rest of the turn remains in `workspaceWrite`; use this posture only for trusted
+ticket input, workflow instructions, and credentials.
 
 ## 7. Lifecycle write-back
 

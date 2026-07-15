@@ -5,7 +5,19 @@ import type {
 import { ERROR_CODES } from "../errors/codes.js";
 
 const CAPABILITY = "github";
-export const GITHUB_CAPABILITY_PROBE_TIMEOUT_MS = 15_000;
+const DEFAULT_GITHUB_CAPABILITY_PROBE_TIMEOUT_MS = 15_000;
+const WINDOWS_GITHUB_CAPABILITY_PROBE_TIMEOUT_MS = 60_000;
+
+export function resolveGithubCapabilityProbeTimeoutMs(
+  platform: NodeJS.Platform,
+): number {
+  return platform === "win32"
+    ? WINDOWS_GITHUB_CAPABILITY_PROBE_TIMEOUT_MS
+    : DEFAULT_GITHUB_CAPABILITY_PROBE_TIMEOUT_MS;
+}
+
+export const GITHUB_CAPABILITY_PROBE_TIMEOUT_MS =
+  resolveGithubCapabilityProbeTimeoutMs(process.platform);
 export const GITHUB_CAPABILITY_OUTPUT_BYTES_CAP = 64 * 1024;
 
 export interface CapabilityCommandExecutor {
@@ -30,6 +42,10 @@ export interface GithubCapabilityProbe {
   ): Promise<GithubCapabilityProbeResult>;
 }
 
+export interface GhGithubCapabilityProbeOptions {
+  platform?: NodeJS.Platform;
+}
+
 export class GithubCapabilityError extends Error {
   readonly code: string;
   readonly capability = CAPABILITY;
@@ -48,6 +64,14 @@ export class GithubCapabilityError extends Error {
 }
 
 export class GhGithubCapabilityProbe implements GithubCapabilityProbe {
+  private readonly timeoutMs: number;
+
+  constructor(options: GhGithubCapabilityProbeOptions = {}) {
+    this.timeoutMs = resolveGithubCapabilityProbeTimeoutMs(
+      options.platform ?? process.platform,
+    );
+  }
+
   async probe(
     input: GithubCapabilityProbeInput,
   ): Promise<GithubCapabilityProbeResult> {
@@ -107,7 +131,7 @@ export class GhGithubCapabilityProbe implements GithubCapabilityProbe {
       return await input.executor.execCommand({
         command: ["gh", ...args],
         cwd: input.workspacePath,
-        timeoutMs: GITHUB_CAPABILITY_PROBE_TIMEOUT_MS,
+        timeoutMs: this.timeoutMs,
         ...(process.platform === "win32"
           ? {}
           : { outputBytesCap: GITHUB_CAPABILITY_OUTPUT_BYTES_CAP }),

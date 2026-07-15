@@ -29,6 +29,13 @@ rl.on("line", async (line) => {
 
 async function handleMessage(message) {
   if (
+    scenario === "delayed-session" &&
+    ["initialize", "thread/start", "turn/start"].includes(message.method)
+  ) {
+    await new Promise((resolve) => setTimeout(resolve, 75));
+  }
+
+  if (
     scenario === "command-401" &&
     (message.method === "thread/start" || message.method === "turn/start")
   ) {
@@ -138,7 +145,7 @@ async function handleMessage(message) {
     );
     assertEqual(
       message.params.timeoutMs,
-      15_000,
+      process.platform === "win32" ? 60_000 : 15_000,
       "command/exec must use the bounded GitHub probe timeout",
     );
     if (process.platform === "win32") {

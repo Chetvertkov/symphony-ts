@@ -442,6 +442,9 @@ fields locally if they want stricter startup checks.
   - Default: `3600000` (1 hour)
 - `read_timeout_ms` (integer)
   - Default: `5000`
+  - On Windows, `initialize`, `thread/start`, and `turn/start` use at least `30000` to absorb
+    sandbox and MCP startup overhead. Other synchronous requests and non-Windows platforms use the
+    configured value unless their contract defines a longer outer envelope.
 - `stall_timeout_ms` (integer)
   - Default: `300000` (5 minutes)
   - If `<= 0`, stall detection is disabled.
@@ -467,6 +470,9 @@ startup behavior.
   - Probe output is bounded to 64 KiB per stream where custom command caps are supported. Windows
     sandbox execution uses the app-server's built-in bounded capture because current Codex versions
     reject a custom `outputBytesCap` there.
+  - Each GitHub probe command uses a `60000` ms command timeout on Windows and `15000` ms elsewhere.
+    The client-side `command/exec` response timer adds `read_timeout_ms` to that command budget so
+    the outer JSON-RPC wait cannot expire before the bounded command itself.
 - `github.credential_source` (string)
   - Default: `environment`.
   - `environment` starts the app-server with a snapshot of Symphony's launch environment and does
@@ -981,7 +987,8 @@ semantics):
    - Params include:
      - `clientInfo` object (for example `{name, version}`)
      - `capabilities` object with `experimentalApi: true` when client-side dynamic tools are used
-   - Wait for response (`read_timeout_ms`)
+   - Wait for response (`read_timeout_ms`, subject to the Windows session-start floor in Section
+     5.3.6)
 2. `initialized` notification
 3. `thread/start` request
    - Params include:
@@ -1147,7 +1154,9 @@ Hard failure on user input requirement:
 
 Timeouts:
 
-- `codex.read_timeout_ms`: request/response timeout during startup and sync requests
+- `codex.read_timeout_ms`: request/response timeout during startup and synchronous requests; on
+  Windows, `initialize`, `thread/start`, and `turn/start` use at least `30000` ms
+- `command/exec`: outer response timeout is the command timeout plus `codex.read_timeout_ms`
 - `codex.turn_timeout_ms`: total turn stream timeout
 - `codex.stall_timeout_ms`: enforced by orchestrator based on event inactivity
 

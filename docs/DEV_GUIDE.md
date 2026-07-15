@@ -223,7 +223,7 @@ results when ready for review.
 | `codex.thread_sandbox` | Thread-level sandbox mode (e.g. `workspace-write`) | `null` |
 | `codex.turn_sandbox_policy` | Per-turn sandbox policy object | `null` |
 | `codex.turn_timeout_ms` | Max wall-clock time in ms for a full agent turn | `3600000` |
-| `codex.read_timeout_ms` | Max time in ms to wait for the next Codex event before declaring stream stalled | `5000` |
+| `codex.read_timeout_ms` | Max response wait for synchronous Codex requests; Windows session-start requests use at least `30000` ms | `5000` |
 | `codex.stall_timeout_ms` | Max silent time in ms before a running agent is declared stalled and stopped | `300000` |
 | `capabilities.github.required` | Require a read-only `gh` identity, target-repository, and push-permission preflight before Codex starts | `false` |
 | `capabilities.github.credential_source` | Use inherited env credentials, or bridge the current `gh auth` token into Codex memory-only | `environment` |
@@ -273,7 +273,7 @@ If the agent must use networked tools during a turn, configure an explicit
 
 ```yaml
 codex:
-  approval_policy: never
+  approval_policy: on-request
   thread_sandbox: workspace-write
   turn_sandbox_policy:
     type: workspaceWrite
@@ -286,9 +286,12 @@ codex:
 ```
 
 Symphony expands `{{ workspace.path }}` and `{{ workspace.git_dir }}` before starting Codex. For
-`workspaceWrite` policies it also ensures the active workspace and its `.git` metadata directory are
-present in `writableRoots`, so agents can create branches, commits, pushes, and PRs when the rest of
-the workflow allows those operations.
+`workspaceWrite` policies it ensures both paths are present in `writableRoots`, but Codex still
+protects `.git` recursively. Git commands that create refs or commits therefore need a narrow
+sandbox escalation. With `approval_policy: on-request`, the current high-trust Symphony client
+auto-approves every approval request it recognizes; it does not enforce a Git-only or command-kind
+allowlist. The rest of the turn remains in `workspaceWrite`, so use this posture only for trusted
+ticket input, workflow instructions, and credentials.
 
 With that in place, env-based credentials exported before launching Symphony are available to turn
 commands. If a specific external CLI still does not find usable credentials or executable paths in

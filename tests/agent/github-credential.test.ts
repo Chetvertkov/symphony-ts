@@ -1,11 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
 
-import {
-  GITHUB_CAPABILITY_OUTPUT_BYTES_CAP,
-  GITHUB_CAPABILITY_PROBE_TIMEOUT_MS,
-} from "../../src/agent/github-capability.js";
+import { GITHUB_CAPABILITY_OUTPUT_BYTES_CAP } from "../../src/agent/github-capability.js";
 import { ERROR_CODES } from "../../src/errors/codes.js";
 import {
+  GITHUB_CREDENTIAL_LOAD_TIMEOUT_MS,
   GhAuthTokenCredentialProvider,
   type GithubCapabilityError,
   type GithubCredentialCommandResult,
@@ -28,7 +26,7 @@ describe("GhAuthTokenCredentialProvider", () => {
       executable: "gh",
       args: ["auth", "token", "--hostname", "github.com"],
       environment,
-      timeoutMs: GITHUB_CAPABILITY_PROBE_TIMEOUT_MS,
+      timeoutMs: GITHUB_CREDENTIAL_LOAD_TIMEOUT_MS,
       outputBytesCap: GITHUB_CAPABILITY_OUTPUT_BYTES_CAP,
     });
   });

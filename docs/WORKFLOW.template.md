@@ -160,8 +160,11 @@ codex:
   # Codex approval policy, passed through to the app-server.
   # Common values depend on the installed Codex schema.
   # Example values: never, on-request, on-failure
+  # Use on-request when trusted turns must create branches or commits: Codex protects
+  # .git in workspace-write. The high-trust client auto-approves every approval
+  # request it recognizes; it has no Git-only or command-kind allowlist.
   # Default: (not set — inherits Codex default)
-  approval_policy: never
+  approval_policy: on-request
 
   # Thread-level sandbox mode passed through to Codex.
   # Example values: workspace-write
@@ -178,8 +181,9 @@ codex:
   #     networkAccess: true
   #     excludeTmpdirEnvVar: false
   #     excludeSlashTmp: false
-  # Symphony expands the workspace placeholders and ensures the active workspace
-  # plus its .git metadata directory are writable for workspaceWrite turns.
+  # Symphony expands both placeholders and includes them in writableRoots.
+  # Codex still protects .git recursively in workspace-write. For trusted workflows,
+  # use on-request and prompt for per-command escalation; narrowness is not enforced.
   # Default: (not set)
   turn_sandbox_policy: null
 
@@ -187,9 +191,9 @@ codex:
   # Default: 3600000 (1 h)
   turn_timeout_ms: 3600000
 
-  # Maximum time in ms to wait for the next event from Codex before
-  # considering the stream stalled.
+  # Maximum response wait in ms for synchronous Codex requests.
   # Default: 5000 (5 s)
+  # On Windows, initialize/thread-start/turn-start requests use at least 30000 ms.
   read_timeout_ms: 5000
 
   # Maximum time in ms a running agent may be silent before being

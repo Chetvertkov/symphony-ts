@@ -3,11 +3,11 @@ import { execFile } from "node:child_process";
 import { ERROR_CODES } from "../errors/codes.js";
 import {
   GITHUB_CAPABILITY_OUTPUT_BYTES_CAP,
-  GITHUB_CAPABILITY_PROBE_TIMEOUT_MS,
   GithubCapabilityError,
 } from "./github-capability.js";
 
 const GITHUB_HOSTNAME = "github.com";
+export const GITHUB_CREDENTIAL_LOAD_TIMEOUT_MS = 15_000;
 
 export interface GithubCredentialProviderInput {
   environment: NodeJS.ProcessEnv;
@@ -54,7 +54,7 @@ export class GhAuthTokenCredentialProvider implements GithubCredentialProvider {
         executable: "gh",
         args: ["auth", "token", "--hostname", GITHUB_HOSTNAME],
         environment: input.environment,
-        timeoutMs: GITHUB_CAPABILITY_PROBE_TIMEOUT_MS,
+        timeoutMs: GITHUB_CREDENTIAL_LOAD_TIMEOUT_MS,
         outputBytesCap: GITHUB_CAPABILITY_OUTPUT_BYTES_CAP,
       });
     } catch (error) {
