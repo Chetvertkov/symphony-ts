@@ -176,3 +176,38 @@ Acceptance:
 - Version checks never block startup, dispatch, or agent continuation.
 - Offline and disabled-check modes are tested.
 - The dashboard clearly distinguishes update notices from runtime errors.
+
+### Task 9: Validate External CLI Capabilities Before Dispatch
+
+Status: Planned
+
+- Add adapter-neutral, workflow-configured capability probes for external CLIs that a coding agent
+  must use, such as GitHub CLI authentication and target-repository access.
+- Execute probes in the same effective shell, environment, credential context, and sandbox boundary
+  that agent commands will use; a hook succeeding in a different shell must not count as proof.
+- For the GitHub capability, verify the authenticated identity and non-mutating repository access,
+  including whether the account can push, without logging tokens or other credential material.
+- Distinguish deterministic operator-action failures such as missing credentials, expired tokens,
+  and repository permission denial from transient network or provider failures.
+- Put deterministic capability failures into an operator hold before substantive agent work starts,
+  and suppress automatic continuation while the failure signature is unchanged.
+- Surface the failed capability, effective executable/config context, remediation guidance, and hold
+  state in structured logs and operator-facing status surfaces.
+- Keep external capabilities opt-in so workflows that do not use GitHub or another specific CLI do
+  not acquire an unrelated startup dependency.
+
+Acceptance:
+
+- Tests reproduce a split-shell credential case where a hook sees valid `gh` credentials but the
+  agent command environment receives `HTTP 401`, and dispatch fails safe before implementation.
+- A repeated unchanged authentication or permission failure does not launch another Codex turn or
+  consume continuation retries; an explicit retry or relevant environment/config change can release
+  the operator hold.
+- A successful GitHub probe confirms identity and target-repository access through non-mutating API
+  checks and allows the normal worker lifecycle to continue.
+- Credential precedence cases such as keyring state, `GH_TOKEN`, `GITHUB_TOKEN`, and alternate
+  config directories are covered without exposing secret values in logs, errors, or the dashboard.
+- Missing executables, invalid credentials, insufficient repository permissions, and transient
+  network failures produce distinct machine-readable error codes and actionable messages.
+- Workflow templates and operator documentation explain how to declare required capabilities and
+  how to recover a held ticket after credentials are repaired.
