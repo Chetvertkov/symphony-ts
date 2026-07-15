@@ -8,7 +8,12 @@ import { AgentRunner } from "../agent/runner.js";
 import { validateDispatchConfig } from "../config/config-resolver.js";
 import type { ResolvedWorkflowConfig } from "../config/types.js";
 import { WorkflowWatcher } from "../config/workflow-watch.js";
-import type { Issue, RetryEntry, RunningEntry } from "../domain/model.js";
+import type {
+  Issue,
+  OperatorHoldEntry,
+  RetryEntry,
+  RunningEntry,
+} from "../domain/model.js";
 import { ERROR_CODES } from "../errors/codes.js";
 import {
   type RuntimeSnapshot,
@@ -22,6 +27,7 @@ import {
   type DashboardServerHost,
   type DashboardServerInstance,
   type IssueDetailResponse,
+  type OperatorRetryResponse,
   type RefreshResponse,
   startDashboardServer,
 } from "../observability/dashboard-server.js";
@@ -83,6 +89,7 @@ interface WorkerExecution {
   completion: Promise<void>;
   stopRequest: StopRequest | null;
   lastResult: AgentRunResult | null;
+  lastError: unknown;
 }
 
 export class RuntimeHostStartupError extends Error {
@@ -233,6 +240,27 @@ export class OrchestratorRuntimeHost implements DashboardServerHost {
     return this.enqueue(async () => this.orchestrator.onRetryTimer(issueId));
   }
 
+  async requestOperatorRetry(
+    issueIdentifier: string,
+  ): Promise<OperatorRetryResponse | null> {
+    return this.enqueue(async () => {
+      const hold = Object.values(
+        this.orchestrator.getState().operatorHolds,
+      ).find((entry) => entry.identifier === issueIdentifier);
+      if (hold === undefined) {
+        return null;
+      }
+
+      const result = await this.orchestrator.retryOperatorHold(hold.issueId);
+      return {
+        issue_id: hold.issueId,
+        issue_identifier: issueIdentifier,
+        dispatched: result.dispatched,
+        released: result.released,
+      };
+    });
+  }
+
   async flushEvents(): Promise<void> {
     await this.eventQueue;
   }
@@ -266,6 +294,13 @@ export class OrchestratorRuntimeHost implements DashboardServerHost {
     ).find((entry) => entry.identifier === issueIdentifier);
     if (retry !== undefined) {
       return toRetryIssueDetail(issueIdentifier, retry);
+    }
+
+    const hold = Object.values(this.orchestrator.getState().operatorHolds).find(
+      (entry) => entry.identifier === issueIdentifier,
+    );
+    if (hold !== undefined) {
+      return toHoldIssueDetail(issueIdentifier, hold);
     }
 
     return null;
@@ -320,6 +355,7 @@ export class OrchestratorRuntimeHost implements DashboardServerHost {
       controller,
       stopRequest: null,
       lastResult: null,
+      lastError: null,
       completion: Promise.resolve(),
     };
 
@@ -339,6 +375,7 @@ export class OrchestratorRuntimeHost implements DashboardServerHost {
         });
       })
       .catch(async (error) => {
+        execution.lastError = error;
         await this.enqueue(async () => {
           await this.finalizeWorkerExecution(execution, {
             outcome: "abnormal",
@@ -382,6 +419,8 @@ export class OrchestratorRuntimeHost implements DashboardServerHost {
   ): Promise<void> {
     this.workers.delete(execution.issueId);
     const lifecycleFailure = getLifecycleFailure(execution.lastResult);
+    const errorCode = extractErrorCode(execution.lastError);
+    const capability = extractCapability(execution.lastError);
 
     await this.logger?.log(
       lifecycleFailure !== null
@@ -407,6 +446,8 @@ export class OrchestratorRuntimeHost implements DashboardServerHost {
               ? "completed"
               : "failed",
         ...(input.reason === undefined ? {} : { reason: input.reason }),
+        ...(errorCode === null ? {} : { error_code: errorCode }),
+        ...(capability === null ? {} : { capability }),
         ...(lifecycleFailure === null
           ? {}
           : {
@@ -428,6 +469,7 @@ export class OrchestratorRuntimeHost implements DashboardServerHost {
       issueId: execution.issueId,
       outcome: input.outcome,
       ...(input.reason === undefined ? {} : { reason: input.reason }),
+      ...(errorCode === null ? {} : { errorCode }),
       endedAt: input.endedAt ?? this.now(),
       handoff: execution.lastResult?.handoff ?? null,
       blocker: execution.lastResult?.blocker ?? null,
@@ -994,6 +1036,7 @@ function toRunningIssueDetail(
       },
     },
     retry: null,
+    hold: null,
     logs: {
       codex_session_logs: [],
     },
@@ -1022,11 +1065,41 @@ function toRetryIssueDetail(
       due_at: new Date(retry.dueAtMs).toISOString(),
       error: retry.error,
     },
+    hold: null,
     logs: {
       codex_session_logs: [],
     },
     recent_events: [],
     last_error: retry.error,
+    tracked: {},
+  };
+}
+
+function toHoldIssueDetail(
+  issueIdentifier: string,
+  hold: OperatorHoldEntry,
+): IssueDetailResponse {
+  return {
+    issue_identifier: issueIdentifier,
+    issue_id: hold.issueId,
+    status: "operator_hold",
+    workspace: null,
+    attempts: {
+      restart_count: hold.attempt,
+      current_retry_attempt: hold.attempt,
+    },
+    running: null,
+    retry: null,
+    hold: {
+      attempt: hold.attempt,
+      held_at: new Date(hold.heldAtMs).toISOString(),
+      error: hold.error,
+    },
+    logs: {
+      codex_session_logs: [],
+    },
+    recent_events: [],
+    last_error: hold.error,
     tracked: {},
   };
 }
@@ -1152,6 +1225,19 @@ function extractErrorCode(error: unknown): string | null {
     typeof error.code === "string"
   ) {
     return error.code;
+  }
+
+  return null;
+}
+
+function extractCapability(error: unknown): string | null {
+  if (
+    typeof error === "object" &&
+    error !== null &&
+    "capability" in error &&
+    typeof error.capability === "string"
+  ) {
+    return error.capability;
   }
 
   return null;

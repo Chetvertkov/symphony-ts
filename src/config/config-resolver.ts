@@ -11,6 +11,7 @@ import {
 import {
   DEFAULT_ACTIVE_STATES,
   DEFAULT_CODEX_COMMAND,
+  DEFAULT_GITHUB_CAPABILITY_REQUIRED,
   DEFAULT_HOOK_TIMEOUT_MS,
   DEFAULT_LINEAR_ENDPOINT,
   DEFAULT_LINEAR_NETWORK_TIMEOUT_MS,
@@ -64,6 +65,8 @@ export function resolveWorkflowConfig(
   const hooks = asRecord(config.hooks);
   const agent = asRecord(config.agent);
   const codex = asRecord(config.codex);
+  const capabilities = asRecord(config.capabilities);
+  const githubCapability = asRecord(capabilities.github);
   const server = asRecord(config.server);
   const observability = asRecord(config.observability);
   const trackerKind = readString(tracker.kind) ?? DEFAULT_TRACKER_KIND;
@@ -145,6 +148,13 @@ export function resolveWorkflowConfig(
         readPositiveInteger(codex.read_timeout_ms) ?? DEFAULT_READ_TIMEOUT_MS,
       stallTimeoutMs:
         readInteger(codex.stall_timeout_ms) ?? DEFAULT_STALL_TIMEOUT_MS,
+    },
+    capabilities: {
+      github: {
+        required:
+          readBoolean(githubCapability.required) ??
+          DEFAULT_GITHUB_CAPABILITY_REQUIRED,
+      },
     },
     server: {
       port: readNonNegativeInteger(server.port),

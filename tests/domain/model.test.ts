@@ -18,6 +18,7 @@ describe("domain model", () => {
       "claimed",
       "running",
       "retry_queued",
+      "operator_hold",
       "released",
     ]);
   });
@@ -25,6 +26,7 @@ describe("domain model", () => {
   it("tracks the run attempt phases and orchestrator events required by the spec", () => {
     expect(RUN_ATTEMPT_PHASES).toEqual([
       "preparing_workspace",
+      "validating_capabilities",
       "blocking_issue",
       "building_prompt",
       "launching_agent_process",

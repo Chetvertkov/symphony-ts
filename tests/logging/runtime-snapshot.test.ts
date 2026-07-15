@@ -55,6 +55,13 @@ describe("runtime snapshot", () => {
       timerHandle: null,
       error: "no available orchestrator slots",
     };
+    state.operatorHolds["issue-4"] = {
+      issueId: "issue-4",
+      identifier: "HOLD-4",
+      attempt: 3,
+      heldAtMs: Date.parse("2026-03-06T10:00:07.000Z"),
+      error: "github_auth_invalid: authentication failed",
+    };
 
     const snapshot = buildRuntimeSnapshot(state, {
       now: new Date("2026-03-06T10:00:10.000Z"),
@@ -64,6 +71,7 @@ describe("runtime snapshot", () => {
     expect(snapshot.counts).toEqual({
       running: 2,
       retrying: 1,
+      held: 1,
     });
     expect(snapshot.running.map((row) => row.issue_identifier)).toEqual([
       "AAA-1",
@@ -92,6 +100,15 @@ describe("runtime snapshot", () => {
         attempt: 2,
         due_at: "2026-03-06T10:00:20.000Z",
         error: "no available orchestrator slots",
+      },
+    ]);
+    expect(snapshot.holds).toEqual([
+      {
+        issue_id: "issue-4",
+        issue_identifier: "HOLD-4",
+        attempt: 3,
+        held_at: "2026-03-06T10:00:07.000Z",
+        error: "github_auth_invalid: authentication failed",
       },
     ]);
     expect(snapshot.codex_totals).toEqual({

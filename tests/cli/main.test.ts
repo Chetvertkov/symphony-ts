@@ -1,6 +1,6 @@
 import { mkdtemp, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
 import { describe, expect, it, vi } from "vitest";
@@ -60,7 +60,7 @@ describe("cli", () => {
     );
 
     expect(runtime.config.server.port).toBe(8080);
-    expect(runtime.logsRoot).toBe("/repo/runtime-logs");
+    expect(runtime.logsRoot).toBe(resolve("/repo/runtime-logs"));
   });
 
   it("treats symlinked executables as the CLI entrypoint", async () => {
@@ -264,6 +264,11 @@ function createConfig(
       turnTimeoutMs: 3_600_000,
       readTimeoutMs: 5_000,
       stallTimeoutMs: 300_000,
+    },
+    capabilities: {
+      github: {
+        required: false,
+      },
     },
     server: {
       port: null,

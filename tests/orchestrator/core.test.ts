@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import type { ResolvedWorkflowConfig } from "../../src/config/types.js";
 import type { Issue } from "../../src/domain/model.js";
+import { ERROR_CODES } from "../../src/errors/codes.js";
 import {
   OrchestratorCore,
   type OrchestratorCoreOptions,
@@ -300,8 +301,10 @@ describe("orchestrator core", () => {
       identifier: "ISSUE-1",
       attempt: 1,
       error: "tracker_handoff_failed: Notion status write failed",
-      timerHandle: null,
+      heldAtMs: Date.parse("2026-03-06T00:00:05.000Z"),
     });
+    expect(orchestrator.getState().retryAttempts["1"]).toBeUndefined();
+    expect(orchestrator.getState().operatorHolds["1"]).toEqual(retryEntry);
     expect(timers.scheduled).toEqual([]);
   });
 
@@ -357,8 +360,10 @@ describe("orchestrator core", () => {
       identifier: "ISSUE-1",
       attempt: 1,
       error: "tracker_block_failed: Notion comment write failed",
-      timerHandle: null,
+      heldAtMs: Date.parse("2026-03-06T00:00:05.000Z"),
     });
+    expect(orchestrator.getState().retryAttempts["1"]).toBeUndefined();
+    expect(orchestrator.getState().operatorHolds["1"]).toEqual(retryEntry);
     expect(timers.scheduled).toEqual([]);
   });
 
@@ -387,8 +392,10 @@ describe("orchestrator core", () => {
       attempt: 2,
       error:
         "no_progress_or_handoff_missing: worker exited normally without structured handoff and without new tracker or PR evidence",
-      timerHandle: null,
+      heldAtMs: Date.parse("2026-03-06T00:00:05.000Z"),
     });
+    expect(orchestrator.getState().retryAttempts["1"]).toBeUndefined();
+    expect(orchestrator.getState().operatorHolds["1"]).toEqual(secondRetry);
     expect(timers.scheduled).toHaveLength(1);
   });
 
@@ -416,6 +423,81 @@ describe("orchestrator core", () => {
     });
     expect(timers.scheduled[0]?.delayMs).toBe(10_000);
     expect(computeFailureRetryDelayMs(3, 30_000)).toBe(30_000);
+  });
+
+  it("places deterministic GitHub capability failures on operator hold without a retry timer", async () => {
+    const timers = createFakeTimerScheduler();
+    const orchestrator = createOrchestrator({ timerScheduler: timers });
+
+    await orchestrator.pollTick();
+    const retryEntry = orchestrator.onWorkerExit({
+      issueId: "1",
+      outcome: "abnormal",
+      errorCode: ERROR_CODES.githubAuthInvalid,
+      reason:
+        "Required GitHub capability failed: gh authentication is invalid or expired.",
+    });
+
+    expect(retryEntry).toMatchObject({
+      issueId: "1",
+      attempt: 1,
+      heldAtMs: Date.parse("2026-03-06T00:00:05.000Z"),
+      error:
+        "github_auth_invalid: worker exited: Required GitHub capability failed: gh authentication is invalid or expired.",
+    });
+    expect(orchestrator.getState().retryAttempts["1"]).toBeUndefined();
+    expect(orchestrator.getState().operatorHolds["1"]).toEqual(retryEntry);
+    expect(timers.scheduled).toEqual([]);
+  });
+
+  it("suppresses polling while held and retries only the selected issue on explicit request", async () => {
+    const timers = createFakeTimerScheduler();
+    const orchestrator = createOrchestrator({ timerScheduler: timers });
+
+    await orchestrator.pollTick();
+    orchestrator.onWorkerExit({
+      issueId: "1",
+      outcome: "abnormal",
+      errorCode: ERROR_CODES.githubAuthInvalid,
+      reason: "authentication failed",
+    });
+
+    const unchangedPoll = await orchestrator.pollTick();
+    expect(unchangedPoll.dispatchedIssueIds).toEqual([]);
+    expect(Object.keys(orchestrator.getState().running)).toEqual([]);
+
+    const retry = await orchestrator.retryOperatorHold("1");
+    expect(retry).toEqual({
+      dispatched: true,
+      released: false,
+      hold: null,
+    });
+    expect(orchestrator.getState().operatorHolds["1"]).toBeUndefined();
+    expect(orchestrator.getState().running["1"]?.retryAttempt).toBe(1);
+    expect(timers.scheduled).toEqual([]);
+  });
+
+  it("uses normal failure backoff for transient GitHub capability failures", async () => {
+    const timers = createFakeTimerScheduler();
+    const orchestrator = createOrchestrator({ timerScheduler: timers });
+
+    await orchestrator.pollTick();
+    const retryEntry = orchestrator.onWorkerExit({
+      issueId: "1",
+      outcome: "abnormal",
+      errorCode: ERROR_CODES.githubCapabilityTransient,
+      reason:
+        "Required GitHub capability could not be verified due to a transient GitHub CLI or network failure.",
+    });
+
+    expect(retryEntry).toMatchObject({
+      issueId: "1",
+      attempt: 1,
+      error: expect.stringContaining("github_capability_transient"),
+    });
+    expect(timers.scheduled).toEqual([
+      expect.objectContaining({ delayMs: 10_000 }),
+    ]);
   });
 
   it("applies codex session events to the running entry and aggregate counters", async () => {
@@ -785,6 +867,11 @@ function createConfig(overrides?: {
       readTimeoutMs: 30_000,
       stallTimeoutMs: 300_000,
       ...overrides?.codex,
+    },
+    capabilities: {
+      github: {
+        required: false,
+      },
     },
     server: {
       port: null,

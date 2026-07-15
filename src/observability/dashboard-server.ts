@@ -49,10 +49,22 @@ export interface IssueDetailRetryState {
   error: string | null;
 }
 
+export interface IssueDetailHoldState {
+  attempt: number;
+  held_at: string;
+  error: string;
+}
+
 export interface IssueDetailResponse {
   issue_identifier: string;
   issue_id: string;
-  status: "claimed" | "released" | "retry_queued" | "running" | "unclaimed";
+  status:
+    | "claimed"
+    | "operator_hold"
+    | "released"
+    | "retry_queued"
+    | "running"
+    | "unclaimed";
   workspace: {
     path: string;
   } | null;
@@ -62,6 +74,7 @@ export interface IssueDetailResponse {
   };
   running: IssueDetailRunningState | null;
   retry: IssueDetailRetryState | null;
+  hold: IssueDetailHoldState | null;
   logs: {
     codex_session_logs: Array<{
       label: string;
@@ -85,12 +98,22 @@ export interface RefreshResponse {
   operations: string[];
 }
 
+export interface OperatorRetryResponse {
+  issue_id: string;
+  issue_identifier: string;
+  dispatched: boolean;
+  released: boolean;
+}
+
 export interface DashboardServerHost {
   getRuntimeSnapshot(): RuntimeSnapshot | Promise<RuntimeSnapshot>;
   getIssueDetails(
     issueIdentifier: string,
   ): IssueDetailResponse | null | Promise<IssueDetailResponse | null>;
   requestRefresh(): RefreshResponse | Promise<RefreshResponse>;
+  requestOperatorRetry?(
+    issueIdentifier: string,
+  ): OperatorRetryResponse | null | Promise<OperatorRetryResponse | null>;
   subscribeToSnapshots?(listener: () => void): () => void;
 }
 
@@ -248,6 +271,35 @@ export function createDashboardRequestHandler(
         await readRequestBody(request);
         const refresh = await options.host.requestRefresh();
         writeJson(response, 202, refresh);
+        return;
+      }
+
+      const holdRetryMatch = /^\/api\/v1\/holds\/([^/]+)\/retry$/.exec(
+        url.pathname,
+      );
+      if (holdRetryMatch !== null) {
+        if (method !== "POST") {
+          writeMethodNotAllowed(response, ["POST"]);
+          return;
+        }
+
+        await readRequestBody(request);
+        const issueIdentifier = decodeURIComponent(holdRetryMatch[1] ?? "");
+        if (options.host.requestOperatorRetry === undefined) {
+          writeJsonError(response, 503, ERROR_CODES.snapshotUnavailable, {
+            message: "Operator hold retry is unavailable.",
+          });
+          return;
+        }
+        const retry = await options.host.requestOperatorRetry(issueIdentifier);
+        if (retry === null) {
+          writeJsonError(response, 404, ERROR_CODES.issueNotFound, {
+            message: `Operator hold '${issueIdentifier}' is not tracked in the current runtime state.`,
+          });
+          return;
+        }
+
+        writeJson(response, 202, retry);
         return;
       }
 

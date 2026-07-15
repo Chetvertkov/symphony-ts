@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   DEFAULT_CODEX_COMMAND,
+  DEFAULT_GITHUB_CAPABILITY_REQUIRED,
   DEFAULT_HOOK_TIMEOUT_MS,
   DEFAULT_MAX_CONCURRENT_AGENTS,
   DEFAULT_MAX_RETRY_BACKOFF_MS,
@@ -34,6 +35,7 @@ describe("SPEC_DEFAULTS", () => {
     expect(DEFAULT_OBSERVABILITY_REFRESH_MS).toBe(1_000);
     expect(DEFAULT_OBSERVABILITY_RENDER_INTERVAL_MS).toBe(16);
     expect(DEFAULT_CODEX_COMMAND).toBe("codex app-server");
+    expect(DEFAULT_GITHUB_CAPABILITY_REQUIRED).toBe(false);
   });
 
   it("uses the expected workflow and workspace defaults", () => {
@@ -49,6 +51,7 @@ describe("SPEC_DEFAULTS", () => {
       DEFAULT_MAX_CONCURRENT_AGENTS,
     );
     expect(SPEC_DEFAULTS.codex.command).toBe(DEFAULT_CODEX_COMMAND);
+    expect(SPEC_DEFAULTS.capabilities.github.required).toBe(false);
     expect(SPEC_DEFAULTS.observability.dashboardEnabled).toBe(
       DEFAULT_OBSERVABILITY_ENABLED,
     );

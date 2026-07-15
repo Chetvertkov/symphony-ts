@@ -45,6 +45,12 @@ export interface WorkflowCodexConfig {
   stallTimeoutMs: number;
 }
 
+export interface WorkflowCapabilitiesConfig {
+  github: {
+    required: boolean;
+  };
+}
+
 export interface WorkflowServerConfig {
   port: number | null;
 }
@@ -64,6 +70,7 @@ export interface ResolvedWorkflowConfig {
   hooks: WorkflowHooksConfig;
   agent: WorkflowAgentConfig;
   codex: WorkflowCodexConfig;
+  capabilities: WorkflowCapabilitiesConfig;
   server: WorkflowServerConfig;
   observability: WorkflowObservabilityConfig;
 }

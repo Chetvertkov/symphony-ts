@@ -3,6 +3,7 @@ export const ORCHESTRATOR_ISSUE_STATUSES = [
   "claimed",
   "running",
   "retry_queued",
+  "operator_hold",
   "released",
 ] as const;
 
@@ -11,6 +12,7 @@ export type OrchestratorIssueStatus =
 
 export const RUN_ATTEMPT_PHASES = [
   "preparing_workspace",
+  "validating_capabilities",
   "blocking_issue",
   "building_prompt",
   "launching_agent_process",
@@ -106,6 +108,14 @@ export interface RetryEntry {
   error: string | null;
 }
 
+export interface OperatorHoldEntry {
+  issueId: string;
+  identifier: string | null;
+  attempt: number;
+  heldAtMs: number;
+  error: string;
+}
+
 export interface CodexTotals {
   inputTokens: number;
   outputTokens: number;
@@ -130,6 +140,7 @@ export interface OrchestratorState {
   running: Record<string, RunningEntry>;
   claimed: Set<string>;
   retryAttempts: Record<string, RetryEntry>;
+  operatorHolds: Record<string, OperatorHoldEntry>;
   completed: Set<string>;
   progressSignatures: Record<string, string>;
   codexTotals: CodexTotals;
@@ -177,6 +188,7 @@ export function createInitialOrchestratorState(input: {
     running: {},
     claimed: new Set<string>(),
     retryAttempts: {},
+    operatorHolds: {},
     completed: new Set<string>(),
     progressSignatures: {},
     codexTotals: {

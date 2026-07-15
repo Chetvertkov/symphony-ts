@@ -326,6 +326,7 @@ Top-level keys:
 - `hooks`
 - `agent`
 - `codex`
+- `capabilities`
 
 Unknown keys should be ignored for forward compatibility.
 
@@ -444,6 +445,28 @@ fields locally if they want stricter startup checks.
 - `stall_timeout_ms` (integer)
   - Default: `300000` (5 minutes)
   - If `<= 0`, stall detection is disabled.
+
+#### 5.3.7 `capabilities` (object, optional extension)
+
+External capabilities are opt-in. Omitting this object preserves the existing dispatch and agent
+startup behavior.
+
+- `github.required` (boolean or boolean string)
+  - Default: `false`.
+  - When `true`, each worker must verify GitHub CLI authentication and push access to the repository
+    checked out in its ticket workspace after `hooks.before_run` succeeds and before the first Codex
+    session starts.
+  - Symphony initializes the same Codex app-server process that will own the worker session, then
+    invokes non-mutating `gh` argv vectors through the experimental `command/exec` method before
+    sending `thread/start` or `turn/start`.
+  - `command/exec` receives the ticket workspace cwd and the same prepared `turn_sandbox_policy`
+    that the later turn receives. It inherits the app-server process environment without a
+    per-command override, so executable lookup, credentials, and network restrictions are checked
+    at the effective Codex command boundary. A successful hook in another shell is not proof of
+    this capability.
+  - Probe output is bounded to 64 KiB per stream where custom command caps are supported. Windows
+    sandbox execution uses the app-server's built-in bounded capture because current Codex versions
+    reject a custom `outputBytesCap` there.
 
 ### 5.4 Prompt Template Contract
 
@@ -577,6 +600,7 @@ This section is intentionally redundant so a coding agent can implement the conf
 - `codex.turn_timeout_ms`: integer, default `3600000`
 - `codex.read_timeout_ms`: integer, default `5000`
 - `codex.stall_timeout_ms`: integer, default `300000`
+- `capabilities.github.required`: boolean, default `false`
 - `server.port` (extension): integer, optional; enables the optional HTTP server, `0` may be used
   for ephemeral local bind, and CLI `--port` overrides it
 
@@ -1131,10 +1155,15 @@ The `Agent Runner` wraps workspace + prompt + app-server client.
 Behavior:
 
 1. Create/reuse workspace for issue.
-2. Build prompt from workflow template.
-3. Start app-server session.
-4. Forward app-server events to orchestrator.
-5. On any error, fail the worker attempt (the orchestrator will retry).
+2. Run `hooks.before_run` when configured.
+3. When `capabilities.github.required` is enabled, verify authenticated GitHub identity, resolve the
+   workspace target repository, and verify that repository reports push permission without mutating
+   GitHub.
+4. Build prompt from workflow template.
+5. Start app-server session.
+6. Forward app-server events to orchestrator.
+7. On any error, fail the worker attempt; deterministic capability failures enter an operator hold,
+   while transient failures use normal orchestrator retry semantics.
 
 Note:
 
@@ -1538,7 +1567,13 @@ API design notes:
    - Invalid workspace path configuration
    - Hook timeout/failure
 
-3. `Agent Session Failures`
+3. `External Capability Failures`
+   - `github_cli_not_found`: `gh` cannot be resolved in the Codex command environment.
+   - `github_auth_invalid`: authentication is missing, invalid, expired, or returns HTTP 401.
+   - `github_permission_denied`: repository access returns HTTP 403 or push permission is false.
+   - `github_capability_transient`: timeout, network, provider, or unclassified probe failure.
+
+4. `Agent Session Failures`
    - Startup handshake failure
    - Turn failed/cancelled
    - Turn timeout
@@ -1546,13 +1581,13 @@ API design notes:
    - Subprocess exit
    - Stalled session (no activity)
 
-4. `Tracker Failures`
+5. `Tracker Failures`
    - API transport errors
    - Non-200 status
    - GraphQL errors
    - malformed payloads
 
-5. `Observability Failures`
+6. `Observability Failures`
    - Snapshot timeout
    - Dashboard render errors
    - Log sink configuration failure
@@ -1566,6 +1601,14 @@ API design notes:
 
 - Worker failures:
   - Convert to retries with exponential backoff.
+
+- External capability failures:
+  - Put `github_cli_not_found`, `github_auth_invalid`, and `github_permission_denied` into the
+    existing operator hold with no automatic retry timer.
+  - Retry `github_capability_transient` using the normal failure backoff.
+  - Expose only the capability name, stable error code, and sanitized recovery reason in logs and
+    retry/status data. Never include tokens, authorization headers, credential environment values,
+    or raw `gh` output.
 
 - Tracker candidate-fetch failures:
   - Skip this tick.

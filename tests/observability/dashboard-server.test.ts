@@ -6,6 +6,7 @@ import type { RuntimeSnapshot } from "../../src/logging/runtime-snapshot.js";
 import {
   type DashboardServerHost,
   type IssueDetailResponse,
+  type OperatorRetryResponse,
   type RefreshResponse,
   createDashboardServer,
   startDashboardServer,
@@ -179,6 +180,48 @@ describe("dashboard server", () => {
     expect(invalidRootMethod.headers.allow).toBe("GET");
   });
 
+  it("retries only a selected operator hold through the explicit POST endpoint", async () => {
+    const calls: string[] = [];
+    const server = await startDashboardServer({
+      port: 0,
+      host: createHost({
+        requestOperatorRetry: (issueIdentifier) => {
+          calls.push(issueIdentifier);
+          return {
+            issue_id: "issue-4",
+            issue_identifier: issueIdentifier,
+            dispatched: true,
+            released: false,
+          } satisfies OperatorRetryResponse;
+        },
+      }),
+    });
+    servers.push(server);
+
+    const retry = await sendRequest(server.port, {
+      method: "POST",
+      path: "/api/v1/holds/HOLD-4/retry",
+      body: "{}",
+      headers: { "content-type": "application/json" },
+    });
+
+    expect(retry.statusCode).toBe(202);
+    expect(JSON.parse(retry.body)).toEqual({
+      issue_id: "issue-4",
+      issue_identifier: "HOLD-4",
+      dispatched: true,
+      released: false,
+    });
+    expect(calls).toEqual(["HOLD-4"]);
+
+    const invalidMethod = await sendRequest(server.port, {
+      method: "GET",
+      path: "/api/v1/holds/HOLD-4/retry",
+    });
+    expect(invalidMethod.statusCode).toBe(405);
+    expect(invalidMethod.headers.allow).toBe("POST");
+  });
+
   it("returns snapshot_unavailable when the host snapshot fails", async () => {
     const server = createDashboardServer({
       host: createHost({
@@ -279,6 +322,7 @@ describe("dashboard server", () => {
       counts: {
         running: 2,
         retrying: 1,
+        held: 0,
       },
     };
     emitUpdate();
@@ -337,6 +381,7 @@ function createSnapshot(): RuntimeSnapshot {
     counts: {
       running: 1,
       retrying: 1,
+      held: 0,
     },
     running: [
       {
@@ -365,6 +410,7 @@ function createSnapshot(): RuntimeSnapshot {
         error: "no available orchestrator slots",
       },
     ],
+    holds: [],
     codex_totals: {
       input_tokens: 1200,
       output_tokens: 800,
@@ -404,6 +450,7 @@ function createIssueDetail(): IssueDetailResponse {
       },
     },
     retry: null,
+    hold: null,
     logs: {
       codex_session_logs: [
         {

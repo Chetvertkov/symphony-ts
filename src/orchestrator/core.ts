@@ -1,3 +1,7 @@
+import {
+  isDeterministicGithubCapabilityErrorCode,
+  isGithubCapabilityErrorCode,
+} from "../agent/github-capability.js";
 import type { CodexClientEvent } from "../codex/app-server-client.js";
 import { validateDispatchConfig } from "../config/config-resolver.js";
 import type {
@@ -6,6 +10,7 @@ import type {
 } from "../config/types.js";
 import {
   type Issue,
+  type OperatorHoldEntry,
   type OrchestratorState,
   type RetryEntry,
   type RunningEntry,
@@ -59,6 +64,12 @@ export interface RetryTimerResult {
   dispatched: boolean;
   released: boolean;
   retryEntry: RetryEntry | null;
+}
+
+export interface OperatorRetryResult {
+  dispatched: boolean;
+  released: boolean;
+  hold: OperatorHoldEntry | null;
 }
 
 export interface TrackerLifecycleBlocker {
@@ -325,15 +336,51 @@ export class OrchestratorCore {
     };
   }
 
+  async retryOperatorHold(issueId: string): Promise<OperatorRetryResult> {
+    const hold = this.state.operatorHolds[issueId];
+    if (hold === undefined) {
+      return { dispatched: false, released: false, hold: null };
+    }
+
+    let candidates: Issue[];
+    try {
+      candidates = await this.tracker.fetchCandidateIssues();
+    } catch {
+      return { dispatched: false, released: false, hold };
+    }
+
+    const issue = candidates.find((candidate) => candidate.id === issueId);
+    if (issue === undefined || !this.isRetryCandidateEligible(issue)) {
+      this.releaseClaim(issueId);
+      return { dispatched: false, released: true, hold: null };
+    }
+
+    if (
+      this.availableSlots() <= 0 ||
+      this.availableSlotsForState(issue.state) <= 0
+    ) {
+      return { dispatched: false, released: false, hold };
+    }
+
+    delete this.state.operatorHolds[issueId];
+    const result = await this.dispatchIssue(issue, hold.attempt);
+    return {
+      dispatched: result.dispatched,
+      released: false,
+      hold: this.state.operatorHolds[issueId] ?? null,
+    };
+  }
+
   onWorkerExit(input: {
     issueId: string;
     outcome: WorkerExitOutcome;
     reason?: string;
+    errorCode?: string;
     endedAt?: Date;
     handoff?: TrackerHandoffRunResult | null;
     blocker?: TrackerBlockerRunResult | null;
     progressSignature?: string | null;
-  }): RetryEntry | null {
+  }): RetryEntry | OperatorHoldEntry | null {
     const runningEntry = this.state.running[input.issueId];
     if (runningEntry === undefined) {
       return null;
@@ -396,12 +443,23 @@ export class OrchestratorCore {
       });
     }
 
+    const errorCode = input.errorCode;
+    if (isDeterministicGithubCapabilityErrorCode(errorCode)) {
+      return this.holdForOperatorAction(input.issueId, {
+        attempt: nextRetryAttempt(runningEntry.retryAttempt),
+        identifier: runningEntry.identifier,
+        error: formatCapabilityFailure(errorCode, input.reason),
+      });
+    }
+
     return this.scheduleRetry(
       input.issueId,
       nextRetryAttempt(runningEntry.retryAttempt),
       {
         identifier: runningEntry.identifier,
-        error: formatWorkerExitReason(input.reason),
+        error: isGithubCapabilityErrorCode(errorCode)
+          ? formatCapabilityFailure(errorCode, input.reason)
+          : formatWorkerExitReason(input.reason),
         delayType: "failure",
       },
     );
@@ -485,24 +543,26 @@ export class OrchestratorCore {
     lifecycleWriteBlocker: TrackerLifecycleBlocker | null;
   }> {
     let issueForDispatch = issue;
-    try {
-      issueForDispatch = await this.claimIssueBeforeDispatch(issue);
-    } catch (error) {
-      const message = `${ERROR_CODES.trackerClaimFailed}: ${toErrorMessage(error)}`;
-      this.scheduleRetry(issue.id, nextRetryAttempt(attempt), {
-        identifier: issue.identifier,
-        error: message,
-        delayType: "failure",
-      });
-      return {
-        dispatched: false,
-        lifecycleWriteBlocker: {
-          issueId: issue.id,
-          issueIdentifier: issue.identifier,
-          operation: "claim",
+    if (!this.config.capabilities.github.required) {
+      try {
+        issueForDispatch = await this.claimIssueBeforeDispatch(issue);
+      } catch (error) {
+        const message = `${ERROR_CODES.trackerClaimFailed}: ${toErrorMessage(error)}`;
+        this.scheduleRetry(issue.id, nextRetryAttempt(attempt), {
+          identifier: issue.identifier,
           error: message,
-        },
-      };
+          delayType: "failure",
+        });
+        return {
+          dispatched: false,
+          lifecycleWriteBlocker: {
+            issueId: issue.id,
+            issueIdentifier: issue.identifier,
+            operation: "claim",
+            error: message,
+          },
+        };
+      }
     }
 
     try {
@@ -741,21 +801,20 @@ export class OrchestratorCore {
       identifier: string | null;
       error: string;
     },
-  ): RetryEntry {
+  ): OperatorHoldEntry {
     this.clearRetryEntry(issueId);
 
-    const retryEntry: RetryEntry = {
+    const hold: OperatorHoldEntry = {
       issueId,
       identifier: input.identifier,
       attempt: input.attempt,
-      dueAtMs: this.now().getTime(),
-      timerHandle: null,
+      heldAtMs: this.now().getTime(),
       error: input.error,
     };
 
     this.state.claimed.add(issueId);
-    this.state.retryAttempts[issueId] = retryEntry;
-    return retryEntry;
+    this.state.operatorHolds[issueId] = hold;
+    return hold;
   }
 
   private clearRetryEntry(issueId: string): void {
@@ -768,6 +827,7 @@ export class OrchestratorCore {
 
   private releaseClaim(issueId: string): void {
     this.clearRetryEntry(issueId);
+    delete this.state.operatorHolds[issueId];
     this.state.claimed.delete(issueId);
     delete this.state.progressSignatures[issueId];
   }
@@ -814,6 +874,13 @@ function formatWorkerExitReason(reason: string | undefined): string {
   return normalized && normalized.length > 0
     ? `worker exited: ${normalized}`
     : "worker exited: abnormal";
+}
+
+function formatCapabilityFailure(
+  errorCode: string,
+  reason: string | undefined,
+): string {
+  return `${errorCode}: ${formatWorkerExitReason(reason)}`;
 }
 
 function buildNoProgressSignature(runningEntry: RunningEntry): string {

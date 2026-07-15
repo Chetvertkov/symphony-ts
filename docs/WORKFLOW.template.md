@@ -106,6 +106,16 @@ hooks:
   timeout_ms: 60000
 
 # ============================================================
+# capabilities — Required external CLI access (all opt-in)
+# ============================================================
+capabilities:
+  github:
+    # Before the first Codex turn, verify gh identity and push access to the
+    # repository checked out in the ticket workspace. The probe is read-only.
+    # Default: false
+    required: false
+
+# ============================================================
 # agent — Concurrency and retry behaviour
 # ============================================================
 agent:
@@ -232,6 +242,14 @@ If the agent must call networked tools during a turn:
 2. If a specific CLI still does not find usable credentials in your environment, provide that
    tool's credential via an env var such as `GH_TOKEN`, `GITHUB_TOKEN`, or a provider-specific API
    key.
+
+If `capabilities.github.required` is enabled, Symphony runs the GitHub check after `before_run`
+through `command/exec` on the same Codex app-server that will own the worker session. It uses the
+ticket workspace, inherited app-server environment, and prepared `turn_sandbox_policy`, and it must
+pass before `thread/start` or `turn/start`. Fix `gh` installation, authentication, repository push
+access, or sandbox network access, then retry only the selected held issue with
+`POST /api/v1/holds/<url-encoded-issue-identifier>/retry`. Restart Symphony instead when the repaired
+environment is only available to a new process.
 
 When finished:
 
