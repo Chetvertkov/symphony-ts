@@ -13,6 +13,7 @@ const DEFAULT_CAPABILITIES = Object.freeze({
 });
 
 const DEFAULT_MAX_LINE_BYTES = 10 * 1024 * 1024;
+const WINDOWS_SESSION_REQUEST_TIMEOUT_MS = 30_000;
 
 type JsonObject = Record<string, unknown>;
 type JsonRpcId = string | number;
@@ -82,6 +83,7 @@ export interface CodexAppServerClientOptions {
   tools?: CodexDynamicToolDefinition[];
   dynamicTools?: CodexDynamicTool[];
   maxLineBytes?: number;
+  platform?: NodeJS.Platform;
   onEvent?: (event: CodexClientEvent) => void;
 }
 
@@ -102,6 +104,22 @@ export interface CodexCommandExecResult {
   exitCode: number;
   stdout: string;
   stderr: string;
+}
+
+export function resolveCodexCommandExecRequestTimeoutMs(
+  commandTimeoutMs: number,
+  readTimeoutMs: number,
+): number {
+  return Math.max(readTimeoutMs, commandTimeoutMs + readTimeoutMs);
+}
+
+export function resolveCodexSessionRequestTimeoutMs(
+  readTimeoutMs: number,
+  platform: NodeJS.Platform = process.platform,
+): number {
+  return platform === "win32"
+    ? Math.max(readTimeoutMs, WINDOWS_SESSION_REQUEST_TIMEOUT_MS)
+    : readTimeoutMs;
 }
 
 export interface CodexTurnResult {
@@ -143,6 +161,7 @@ interface ActiveTurn {
 
 export class CodexAppServerClient {
   private readonly options: CodexAppServerClientOptions;
+  private readonly sessionRequestTimeoutMs: number;
 
   private child: ChildProcessWithoutNullStreams | null = null;
   private nextRequestId = 1;
@@ -160,6 +179,10 @@ export class CodexAppServerClient {
 
   constructor(options: CodexAppServerClientOptions) {
     this.options = options;
+    this.sessionRequestTimeoutMs = resolveCodexSessionRequestTimeoutMs(
+      options.readTimeoutMs,
+      options.platform,
+    );
     this.dynamicTools = [...(options.dynamicTools ?? [])];
   }
 
@@ -226,9 +249,9 @@ export class CodexAppServerClient {
           : { outputBytesCap: input.outputBytesCap }),
         sandboxPolicy: input.sandboxPolicy,
       },
-      Math.max(
+      resolveCodexCommandExecRequestTimeoutMs(
+        input.timeoutMs,
         this.options.readTimeoutMs,
-        input.timeoutMs + this.options.readTimeoutMs,
       ),
     );
 
@@ -385,13 +408,17 @@ export class CodexAppServerClient {
     });
 
     try {
-      await this.request("initialize", {
-        clientInfo: this.options.clientInfo ?? DEFAULT_CLIENT_INFO,
-        capabilities: {
-          ...DEFAULT_CAPABILITIES,
-          ...(this.options.capabilities ?? {}),
+      await this.request(
+        "initialize",
+        {
+          clientInfo: this.options.clientInfo ?? DEFAULT_CLIENT_INFO,
+          capabilities: {
+            ...DEFAULT_CAPABILITIES,
+            ...(this.options.capabilities ?? {}),
+          },
         },
-      });
+        this.sessionRequestTimeoutMs,
+      );
       this.send({
         method: "initialized",
         params: {},
@@ -417,12 +444,16 @@ export class CodexAppServerClient {
   }
 
   private async startThread(): Promise<void> {
-    const threadResult = await this.request("thread/start", {
-      approvalPolicy: this.options.approvalPolicy,
-      sandbox: this.options.threadSandbox,
-      cwd: this.options.cwd,
-      dynamicTools: this.getAdvertisedDynamicTools(),
-    });
+    const threadResult = await this.request(
+      "thread/start",
+      {
+        approvalPolicy: this.options.approvalPolicy,
+        sandbox: this.options.threadSandbox,
+        cwd: this.options.cwd,
+        dynamicTools: this.getAdvertisedDynamicTools(),
+      },
+      this.sessionRequestTimeoutMs,
+    );
 
     const threadId = extractNestedString(threadResult, [
       "result",
@@ -451,19 +482,23 @@ export class CodexAppServerClient {
       );
     }
 
-    const response = await this.request("turn/start", {
-      threadId: input.threadId,
-      input: [
-        {
-          type: "text",
-          text: input.prompt,
-        },
-      ],
-      cwd: this.options.cwd,
-      title: input.title,
-      approvalPolicy: this.options.approvalPolicy,
-      sandboxPolicy: this.options.turnSandboxPolicy,
-    });
+    const response = await this.request(
+      "turn/start",
+      {
+        threadId: input.threadId,
+        input: [
+          {
+            type: "text",
+            text: input.prompt,
+          },
+        ],
+        cwd: this.options.cwd,
+        title: input.title,
+        approvalPolicy: this.options.approvalPolicy,
+        sandboxPolicy: this.options.turnSandboxPolicy,
+      },
+      this.sessionRequestTimeoutMs,
+    );
 
     const turnId = extractNestedString(response, ["result", "turn", "id"]);
     if (turnId === null) {

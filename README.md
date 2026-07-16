@@ -170,11 +170,16 @@ codex:
   command: codex --config shell_environment_policy.inherit=all app-server
 ```
 
-If your agent must push branches, open PRs, or call external APIs during a turn, also configure a
-turn sandbox policy that explicitly allows network access and writable roots for the active
-workspace. Symphony expands `{{ workspace.path }}` and `{{ workspace.git_dir }}` placeholders before
-starting Codex and ensures both roots are writable for `workspaceWrite` turns, which lets agents
-create branches, commits, pushes, and PRs.
+If your agent must push branches, open PRs, or call external APIs during a turn, configure a turn
+sandbox policy that explicitly allows network access and writable roots for the active workspace.
+Symphony expands `{{ workspace.path }}` and `{{ workspace.git_dir }}` placeholders before starting
+Codex. Codex still protects `.git` recursively in `workspaceWrite`, even when `.git` appears in
+`writableRoots`. For automated branch, commit, and push workflows, use `approval_policy: on-request`
+and instruct the agent to request a narrow sandbox escalation for the required Git command. The
+current high-trust Symphony client auto-approves every approval request it recognizes; it does not
+enforce a Git-only or command-kind allowlist. `on-request` still lets Codex escalate individual operations
+while the rest of the turn remains in `workspaceWrite`. Use this posture only when ticket input,
+workflow instructions, and available credentials are trusted.
 
 If a specific external CLI still does not see the credentials or executable paths it needs in your
 environment, provide that tool's credential via environment variables before launching Symphony and

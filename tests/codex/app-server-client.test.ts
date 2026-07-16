@@ -5,10 +5,13 @@ import { fileURLToPath } from "node:url";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { GITHUB_CAPABILITY_PROBE_TIMEOUT_MS } from "../../src/agent/github-capability.js";
 import {
   CodexAppServerClient,
   type CodexAppServerClientError,
   type CodexClientEvent,
+  resolveCodexCommandExecRequestTimeoutMs,
+  resolveCodexSessionRequestTimeoutMs,
 } from "../../src/codex/app-server-client.js";
 import { createLinearGraphqlDynamicTool } from "../../src/codex/linear-graphql-tool.js";
 import { ERROR_CODES } from "../../src/errors/codes.js";
@@ -28,6 +31,23 @@ afterEach(async () => {
 });
 
 describe("CodexAppServerClient", () => {
+  it("budgets the outer request beyond a long command timeout", () => {
+    expect(resolveCodexCommandExecRequestTimeoutMs(60_000, 5_000)).toBe(65_000);
+  });
+
+  it.each([
+    { platform: "win32" as const, readTimeoutMs: 5_000, expected: 30_000 },
+    { platform: "win32" as const, readTimeoutMs: 45_000, expected: 45_000 },
+    { platform: "linux" as const, readTimeoutMs: 5_000, expected: 5_000 },
+  ])(
+    "resolves a $expected ms session request timeout on $platform",
+    ({ platform, readTimeoutMs, expected }) => {
+      expect(resolveCodexSessionRequestTimeoutMs(readTimeoutMs, platform)).toBe(
+        expected,
+      );
+    },
+  );
+
   it("runs command/exec in the initialized app-server with the exact prepared sandbox and no environment overrides", async () => {
     const workspace = await createWorkspace();
     const client = createClient("command-only", workspace, [], {
@@ -45,7 +65,7 @@ describe("CodexAppServerClient", () => {
     const result = await client.execCommand({
       command: ["gh", "api", "user", "--jq", ".login"],
       cwd: workspace,
-      timeoutMs: 15_000,
+      timeoutMs: GITHUB_CAPABILITY_PROBE_TIMEOUT_MS,
       ...(process.platform === "win32" ? {} : { outputBytesCap: 64 * 1024 }),
       sandboxPolicy,
     });
@@ -240,6 +260,23 @@ describe("CodexAppServerClient", () => {
     await client.close();
   });
 
+  it("applies the Windows floor to initialize, thread/start, and turn/start", async () => {
+    const workspace = await createWorkspace();
+    const client = createClient("delayed-session", workspace, [], {
+      platform: "win32",
+      readTimeoutMs: 50,
+    });
+
+    const result = await client.startSession({
+      prompt: "Wait for the delayed session requests",
+      title: "ABC-123: Example",
+    });
+
+    expect(result.status).toBe("completed");
+
+    await client.close();
+  });
+
   it("advertises and executes the linear_graphql dynamic tool", async () => {
     const workspace = await createWorkspace();
     const events: CodexClientEvent[] = [];
@@ -281,6 +318,7 @@ describe("CodexAppServerClient", () => {
     const workspace = await createWorkspace();
     const events: CodexClientEvent[] = [];
     const client = createClient("read-timeout", workspace, events, {
+      platform: "linux",
       readTimeoutMs: 50,
     });
 
@@ -369,6 +407,7 @@ function createClient(
   workspace: string,
   events: CodexClientEvent[],
   overrides?: Partial<{
+    platform: NodeJS.Platform;
     readTimeoutMs: number;
     turnTimeoutMs: number;
     stallTimeoutMs: number;
@@ -389,6 +428,9 @@ function createClient(
     readTimeoutMs: overrides?.readTimeoutMs ?? 2_000,
     turnTimeoutMs: overrides?.turnTimeoutMs ?? 500,
     stallTimeoutMs: overrides?.stallTimeoutMs ?? 1_000,
+    ...(overrides?.platform === undefined
+      ? {}
+      : { platform: overrides.platform }),
     ...(overrides?.environment === undefined
       ? {}
       : { environment: overrides.environment }),

@@ -2,9 +2,9 @@ import { describe, expect, it, vi } from "vitest";
 
 import {
   GITHUB_CAPABILITY_OUTPUT_BYTES_CAP,
-  GITHUB_CAPABILITY_PROBE_TIMEOUT_MS,
   GhGithubCapabilityProbe,
   type GithubCapabilityError,
+  resolveGithubCapabilityProbeTimeoutMs,
 } from "../../src/agent/github-capability.js";
 import type { CodexCommandExecResult } from "../../src/codex/app-server-client.js";
 import { ERROR_CODES } from "../../src/errors/codes.js";
@@ -16,13 +16,19 @@ const SANDBOX_POLICY = {
 };
 
 describe("GhGithubCapabilityProbe", () => {
+  it("allows for Windows command/exec sandbox startup overhead", () => {
+    expect(resolveGithubCapabilityProbeTimeoutMs("win32")).toBe(60_000);
+    expect(resolveGithubCapabilityProbeTimeoutMs("linux")).toBe(15_000);
+    expect(resolveGithubCapabilityProbeTimeoutMs("darwin")).toBe(15_000);
+  });
+
   it("checks identity, target repository, and push permission with non-mutating argv commands", async () => {
     const execCommand = vi
       .fn()
       .mockResolvedValueOnce(result("octocat\n"))
       .mockResolvedValueOnce(result("example/project\n"))
       .mockResolvedValueOnce(result("true\n"));
-    const probe = new GhGithubCapabilityProbe();
+    const probe = new GhGithubCapabilityProbe({ platform: "win32" });
 
     await expect(
       probe.probe({
@@ -52,7 +58,7 @@ describe("GhGithubCapabilityProbe", () => {
     for (const [input] of execCommand.mock.calls) {
       expect(input).toMatchObject({
         cwd: WORKSPACE,
-        timeoutMs: GITHUB_CAPABILITY_PROBE_TIMEOUT_MS,
+        timeoutMs: 60_000,
         sandboxPolicy: SANDBOX_POLICY,
       });
       if (process.platform === "win32") {
@@ -62,6 +68,50 @@ describe("GhGithubCapabilityProbe", () => {
       }
       expect(input).not.toHaveProperty("env");
     }
+  });
+
+  it("keeps the existing command timeout outside Windows", async () => {
+    const execCommand = vi
+      .fn()
+      .mockResolvedValueOnce(result("octocat\n"))
+      .mockResolvedValueOnce(result("example/project\n"))
+      .mockResolvedValueOnce(result("true\n"));
+
+    await new GhGithubCapabilityProbe({ platform: "linux" }).probe({
+      workspacePath: WORKSPACE,
+      sandboxPolicy: SANDBOX_POLICY,
+      executor: { execCommand },
+    });
+
+    expect(execCommand.mock.calls.map(([input]) => input.timeoutMs)).toEqual([
+      15_000, 15_000, 15_000,
+    ]);
+  });
+
+  it("allows Windows probe steps beyond the previous timeout budget", async () => {
+    const outputs = ["octocat\n", "example/project\n", "true\n"];
+    const simulatedDurationMs = 20_000;
+    const execCommand = vi.fn(
+      async (input: { timeoutMs: number }): Promise<CodexCommandExecResult> => {
+        if (input.timeoutMs <= simulatedDurationMs) {
+          throw new Error("simulated command timeout");
+        }
+        return result(outputs.shift() ?? "");
+      },
+    );
+
+    await expect(
+      new GhGithubCapabilityProbe({ platform: "win32" }).probe({
+        workspacePath: WORKSPACE,
+        sandboxPolicy: SANDBOX_POLICY,
+        executor: { execCommand },
+      }),
+    ).resolves.toMatchObject({
+      identity: "octocat",
+      repository: "example/project",
+      canPush: true,
+    });
+    expect(execCommand).toHaveBeenCalledTimes(3);
   });
 
   it.each([

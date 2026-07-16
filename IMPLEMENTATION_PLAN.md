@@ -179,7 +179,7 @@ Acceptance:
 
 ### Task 9: Validate External CLI Capabilities Before Dispatch
 
-Status: Planned
+Status: Complete
 
 - Add adapter-neutral, workflow-configured capability probes for external CLIs that a coding agent
   must use, such as GitHub CLI authentication and target-repository access.
